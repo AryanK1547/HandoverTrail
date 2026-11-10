@@ -17,7 +17,7 @@ st.sidebar.selectbox(
 
 st.title("HandoverTrail")
 st.markdown("Turn scattered project files into a clear, evidence-linked handover.")
-st.markdown("Reviewers verify claims, while incoming teammates see approved project context.")
+st.markdown("Reviewers assess claims against evidence, while incoming teammates see approved project context.")
 st.markdown("Load the demo to explore the workflow without uploading your own files.")
 
 st.subheader("Five-step workflow")

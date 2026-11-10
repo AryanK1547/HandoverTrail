@@ -19,7 +19,11 @@ st.sidebar.selectbox(
 )
 
 st.title("🤝 Official Project Handover")
-st.markdown("Welcome to the team! Below is the verified, human-approved knowledge you need to get up to speed.")
+st.markdown("Welcome to the team! Below is the human-approved project knowledge you need to get up to speed.")
+st.caption(
+    "Means the same claim is supported by 2+ different files; it does not yet check that they agree. "
+    "Conflict detection is planned."
+)
 st.divider()
 
 PROJECT_ID = "PROJ-DEMO-001"
@@ -46,7 +50,13 @@ if approved_claims:
     for ctype, claims in claims_by_type.items():
         st.subheader(f"📌 {ctype}s")
         for c in claims:
-            trust_badge = "🟢 [VERIFIED]" if c["trust_status"] == "VERIFIED" else "🟡 [SINGLE SOURCE]"
+            trust_labels = {
+                "VERIFIED": "Corroborated (2+ source files)",
+                "SINGLE_SOURCE": "Single source",
+                "MISSING_EVIDENCE": "Missing evidence",
+                "CONFLICTING": "Conflicting",
+            }
+            trust_badge = trust_labels.get(c["trust_status"], "Unknown")
             
             with st.expander(f"{trust_badge} {c['claim_text'][:60]}..."):
                 st.write(f"**{c['claim_text']}**")

@@ -77,17 +77,26 @@ st.divider()
 
 # --- CLAIMS & EVIDENCE INSPECTION QUEUE ---
 st.subheader("📋 Candidate Claims Queue")
+st.caption(
+    "Means the same claim is supported by 2+ different files; it does not yet check that they agree. "
+    "Conflict detection is planned."
+)
 claims = get_visible_claims(user_role, PROJECT_ID)
 
 if claims:
     for c in claims:
         claim_id = c["claim_id"]
-        
-        # Determine badge color based on trust status
+        trust_labels = {
+            "VERIFIED": "Corroborated (2+ source files)",
+            "SINGLE_SOURCE": "Single source",
+            "MISSING_EVIDENCE": "Missing evidence",
+            "CONFLICTING": "Conflicting",
+        }
+        trust_label = trust_labels.get(c["trust_status"], "Unknown")
         trust_color = "🟢" if c["trust_status"] == "VERIFIED" else "🟡" if c["trust_status"] == "SINGLE_SOURCE" else "🔴"
         review_icon = "⏳" if c["review_status"] == "PENDING" else "✅" if c["review_status"] == "APPROVED" else "❌"
         
-        with st.expander(f"{review_icon} {trust_color} [{c['trust_status']}] [{c['claim_type']}] {c['claim_text'][:80]}..."):
+        with st.expander(f"{review_icon} {trust_color} [{trust_label}] [{c['claim_type']}] {c['claim_text'][:80]}..."):
             st.write("**Full Claim Text:**", c["claim_text"])
             st.write(f"**Claim ID:** `{claim_id}` | **Type:** `{c['claim_type']}` | **Review Status:** `{c['review_status']}`")
 
