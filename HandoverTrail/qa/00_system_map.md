@@ -1,12 +1,12 @@
 # HandoverTrail System Map
 
-Phase 0 reconnaissance, 2026-11-10.
+Phase 0 baseline with implementation state recorded through F3, 2026-11-10.
 
 ## Runtime and entry points
 
-- The application is a Python/Streamlit multipage app. `app.py` is empty; Streamlit discovers the scripts under `pages/`.
+- The application is a Python/Streamlit multipage app. `app.py` is the landing page; Streamlit discovers scripts under `pages/`.
 - The current runtime stack declared in `requirements.txt` is Streamlit, pandas, and `google-genai`.
-- The database is SQLite at the relative path `handovertrail.db`. The connection helper enables SQLite foreign-key enforcement.
+- The database is SQLite. Its default path is next to `database.py`; `HANDOVERTRAIL_DB` can override it. The connection helper enables SQLite foreign-key enforcement.
 - The working tree already contains local changes. QA phases must preserve them and must not reset or overwrite the database.
 
 ## Implemented data flow
@@ -39,35 +39,36 @@ Review Claims page → `extractor.py`
 
 | Component | Observed responsibility |
 |---|---|
-| `app.py` | Empty; no explicit app-level router or session initialization. |
-| `database.py` | Creates eight SQLite tables: users, projects, sources, evidence_chunks, claims, claim_evidence, reviews, and audit_logs. Enables foreign keys per connection. |
-| `source_parser.py` | Parses CSV rows and groups non-empty TXT lines in windows of three, then stores evidence chunks. Resolves files from the demo directory or the current working path. |
+| `app.py` | Landing page, workflow summary, demo source loader, and session-persisted role selector. |
+| `database.py` | Creates eight SQLite tables, applies the additive source-sensitivity migration, seeds demo users/project, and enables foreign keys per connection. |
+| `source_parser.py` | Validates and persists `.txt`/`.csv` uploads under `uploads/<project>/`; parses UTF-8 BOM or Latin-1 text and ragged CSV rows; reparses only selected or unprocessed sources. |
 | `extractor.py` | Builds an evidence prompt, validates returned claim types and evidence IDs, calls Gemini then OpenRouter, and falls back to keyword grouping. Saves generated claims and their evidence links. |
 | `validator.py` | Sets `MISSING_EVIDENCE` when no linked evidence exists, `VERIFIED` when linked chunks come from two or more distinct filenames, otherwise `SINGLE_SOURCE`. |
-| `permissions.py` | Empty in the inspected worktree. No permission guard is implemented here. |
-| `retrieval.py` | Empty in the inspected worktree. |
+| `permissions.py` | Normalizes simulated role names, checks sensitivity/review capability, and authorizes review writes with review/audit records. |
+| `retrieval.py` | Role-required read helpers for visible sources, chunks, claims, claim evidence, and hidden item counts. |
 | `models.py` | Empty in the inspected worktree. |
-| `pages/1_Upload_Sources.py` | Creates the demo project, registers demo/custom source metadata, calls the parser, and displays chunks. |
-| `pages/2_Review_Claims.py` | Calls extraction and validation; displays evidence; includes a hard-coded demo reviewer and approve/reject actions. |
-| `pages/3_Handover_View.py` | Queries approved claims for the demo project and renders their linked evidence. |
+| `pages/1_Upload_Sources.py` | Loads demo sources, persists custom upload bytes with a sensitivity selection, and renders role-visible sources/chunks. |
+| `pages/2_Review_Claims.py` | Calls extraction/validation, renders role-visible claims/evidence, and gates approve/reject actions. |
+| `pages/3_Handover_View.py` | Renders approved, role-visible claims/citations and an aggregate hidden-item count for Incoming. |
 
 ## Schema and QA fixture compatibility
 
-- The source schema has no sensitivity/classification field. The `sources` table stores source ID, project ID, filename, file type, and upload time.
-- The provided QA fixture includes `sensitivity` labels to describe intended security cases; those fields are not currently represented in the application schema or ingestion path.
+- `sources.sensitivity` is `TEXT NOT NULL DEFAULT 'restricted'`; new databases constrain values to `public` or `restricted`. Existing databases receive an additive column migration.
+- The provided QA fixture includes sensitivity labels for public and restricted cases.
 - The database has claim trust states including `CONFLICTING`, but the current validator does not detect contradictory claims; it only counts supporting filenames.
-- The current handover page filters for `review_status = 'APPROVED'`, but there is no role-based authorization check or restricted-source filtering in that page.
-- Custom uploads register metadata, but the inspected upload page does not persist uploaded file bytes. The parser later resolves the filename from the local demo directory or working directory.
+- Role selection is simulated in Streamlit session state, not backed by authenticated identity. Incoming reads filter out any claim unless every evidence link is public and the claim is approved. Admin/Reviewer can see public and restricted evidence.
+- The synthetic `restricted_demo.txt` contains only an explicitly fake token and fictional example phone number. It is included to check read-time filtering.
+- Custom upload bytes are persisted in ignored `uploads/`; parsing searches that per-project directory before packaged demo files.
 
 ## Phase 0 observations and risks for later QA
 
 1. **High priority, verify in Phase 1/2:** no automated `tests/` or `qa/` suite was present at initial inventory.
-2. **Security scope:** the brief's sensitivity and immutable authorization guard are not implemented in the inspected code; do not treat session/UI state as authorization.
-3. **Ingestion behavior:** verify custom-upload persistence, missing files, duplicate names, and repeated parsing. Parsing defaults to `force_reparse=True` and deletes existing evidence chunks for the project before rereading files.
+2. **Security scope at baseline:** sensitivity and authorization were initially missing. F3 adds demo-role guards and read filtering, but roles remain simulated and are not production authentication.
+3. **Ingestion behavior at baseline:** uploads were metadata-only and parsing defaulted to project-wide reparse. F2 adds file persistence and per-source reparsing.
 4. **Extraction behavior:** AI extraction sends stored excerpts to external providers. Validate fallback order, response validation, errors, secret redaction, and whether malformed/empty responses overwrite prior claims.
 5. **Verification semantics:** `VERIFIED` currently means two distinct filenames are linked, not that sources independently corroborate the same proposition. Contradictions are not detected by the validator.
 6. **Persistence:** the SQLite location is relative to the process working directory and is not durable by itself on ephemeral hosting.
-7. **Review workflow:** reviewer identity is fixed in the page code; authorization is not enforced by the review action.
+7. **Review workflow at baseline:** reviewer identity was fixed and authorization absent. F3 now looks up the seeded user for the selected demo role, checks permissions, and audits allowed/denied review attempts.
 8. **Current local state:** `handovertrail.db` and multiple application/data files are already modified in the worktree. Later QA should isolate tests with temporary databases and avoid changing the active DB.
 
 ## Phase 0 scope boundary

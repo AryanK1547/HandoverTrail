@@ -9,6 +9,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from database import bootstrap, get_connection
 from source_parser import parse_and_store_sources, persist_uploaded_file, sanitize_upload_filename
+from retrieval import get_visible_evidence_chunks, get_visible_sources
 
 bootstrap()
 
@@ -41,14 +42,25 @@ if st.button("🚀 Load Pre-packaged Demo Files"):
             if os.path.isfile(file_path):
                 source_id = f"SRC-{uuid.uuid4().hex[:8].upper()}"
                 file_type = file_name.split(".")[-1].upper()
+                sensitivity = "restricted" if file_name == "restricted_demo.txt" else "public"
                 uploaded_at = datetime.now().isoformat()
                 
                 # Check if already loaded
                 cursor.execute("SELECT source_id FROM sources WHERE project_id = ? AND file_name = ?", (PROJECT_ID, file_name))
-                if not cursor.fetchone():
+                existing_source = cursor.fetchone()
+                if existing_source:
                     cursor.execute(
-                        "INSERT INTO sources (source_id, project_id, file_name, file_type, uploaded_at) VALUES (?, ?, ?, ?, ?)",
-                        (source_id, PROJECT_ID, file_name, file_type, uploaded_at)
+                        "UPDATE sources SET sensitivity = ? WHERE source_id = ?",
+                        (sensitivity, existing_source["source_id"]),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO sources
+                            (source_id, project_id, file_name, file_type, uploaded_at, sensitivity)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (source_id, PROJECT_ID, file_name, file_type, uploaded_at, sensitivity)
                     )
                     loaded_count += 1
         
@@ -152,9 +164,8 @@ st.divider()
 st.subheader("📋 Currently Uploaded Sources")
 conn = get_connection()
 cursor = conn.cursor()
-cursor.execute("SELECT source_id, file_name, file_type, sensitivity, uploaded_at FROM sources WHERE project_id = ?", (PROJECT_ID,))
-rows = cursor.fetchall()
 conn.close()
+rows = get_visible_sources(st.session_state["user_role"], PROJECT_ID)
 
 if rows:
     sources_data = [{"Source ID": r["source_id"], "File Name": r["file_name"], "Type": r["file_type"], "Sensitivity": r["sensitivity"], "Uploaded At": r["uploaded_at"]} for r in rows]
@@ -176,17 +187,7 @@ if st.button("🔨 Process & Chunk Uploaded Sources"):
 # --- INSPECT EVIDENCE CHUNKS ---
 st.subheader("🔍 Generated Evidence Chunks")
 
-conn = get_connection()
-cursor = conn.cursor()
-cursor.execute("""
-    SELECT e.evidence_id, s.file_name, e.reference_location, e.excerpt 
-    FROM evidence_chunks e
-    JOIN sources s ON e.source_id = s.source_id
-    WHERE s.project_id = ?
-    ORDER BY s.file_name ASC, e.chunk_index ASC
-""", (PROJECT_ID,))
-evidence_rows = cursor.fetchall()
-conn.close()
+evidence_rows = get_visible_evidence_chunks(st.session_state["user_role"], PROJECT_ID)
 
 if evidence_rows:
     evd_data = [

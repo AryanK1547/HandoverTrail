@@ -4,7 +4,8 @@ import sys
 
 # Ensure parent directory is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from database import bootstrap, get_connection
+from database import bootstrap
+from retrieval import count_hidden_claims, get_claim_evidence, get_visible_claims
 
 bootstrap()
 
@@ -22,19 +23,15 @@ st.markdown("Welcome to the team! Below is the verified, human-approved knowledg
 st.divider()
 
 PROJECT_ID = "PROJ-DEMO-001"
+user_role = st.session_state["user_role"]
 
-# --- FETCH ONLY APPROVED CLAIMS ---
-conn = get_connection()
-cursor = conn.cursor()
-
-# STRICT FILTERING: We only query claims where review_status is 'APPROVED'
-cursor.execute("""
-    SELECT claim_id, claim_text, claim_type, trust_status
-    FROM claims
-    WHERE project_id = ? AND review_status = 'APPROVED'
-    ORDER BY claim_type ASC
-""", (PROJECT_ID,))
-approved_claims = cursor.fetchall()
+approved_claims = [
+    claim for claim in get_visible_claims(user_role, PROJECT_ID)
+    if claim["review_status"] == "APPROVED"
+]
+hidden_count = count_hidden_claims(user_role, PROJECT_ID)
+if hidden_count:
+    st.info(f"{hidden_count} items hidden: sources you are not authorised to view")
 
 if approved_claims:
     # Group claims by type for a cleaner reading experience
@@ -55,14 +52,7 @@ if approved_claims:
                 st.write(f"**{c['claim_text']}**")
                 
                 # Fetch evidence for transparency
-                cursor.execute("""
-                    SELECT s.file_name, e.reference_location, e.excerpt
-                    FROM claim_evidence ce
-                    JOIN evidence_chunks e ON ce.evidence_id = e.evidence_id
-                    JOIN sources s ON e.source_id = s.source_id
-                    WHERE ce.claim_id = ?
-                """, (c["claim_id"],))
-                evidence = cursor.fetchall()
+                evidence = get_claim_evidence(user_role, c["claim_id"])
                 
                 if evidence:
                     st.markdown("---")
@@ -71,5 +61,3 @@ if approved_claims:
                         st.info(f"📄 **{ev['file_name']}** (`{ev['reference_location']}`)\n> {ev['excerpt']}")
 else:
     st.info("No approved claims available for handover yet. A Reviewer needs to approve claims in the Review dashboard.")
-
-conn.close()
