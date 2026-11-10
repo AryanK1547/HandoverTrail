@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import sys
+from streamlit.errors import StreamlitSecretNotFoundError
 
 # Ensure parent directory is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -27,8 +28,12 @@ user_role = st.session_state["user_role"]
 st.subheader("⚡ Action Controls")
 
 # API keys stay in Streamlit secrets and are never displayed in the UI.
-api_key_secret = st.secrets.get("GEMINI_API_KEY", None)
-openrouter_api_key_secret = st.secrets.get("OPENROUTER_API_KEY", None)
+try:
+    api_key_secret = st.secrets.get("GEMINI_API_KEY", None)
+    openrouter_api_key_secret = st.secrets.get("OPENROUTER_API_KEY", None)
+except StreamlitSecretNotFoundError:
+    api_key_secret = None
+    openrouter_api_key_secret = None
 if "ai_extraction_runs" not in st.session_state:
     st.session_state["ai_extraction_runs"] = 0
 MAX_AI_EXTRACTION_RUNS = 3
