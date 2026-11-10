@@ -1,0 +1,23 @@
+{
+  "project_id": "PROJ-TEST-999",
+  "sources": [
+    {
+      "source_id": "SRC-001",
+      "file_name": "architecture_decision.txt",
+      "sensitivity": "PUBLIC",
+      "excerpt": "Team decided to use FastAPI and SQLite for the backend implementation."
+    },
+    {
+      "source_id": "SRC-002",
+      "file_name": "conflicting_notes.txt",
+      "sensitivity": "PUBLIC",
+      "excerpt": "Backend will be built using Node.js Express instead of Python."
+    },
+    {
+      "source_id": "SRC-003",
+      "file_name": "restricted_creds.txt",
+      "sensitivity": "RESTRICTED",
+      "excerpt": "Internal deployment token is FAKE-KEY-1234. Do not share."
+    }
+  ]
+}

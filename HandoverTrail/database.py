@@ -1,15 +1,20 @@
 import sqlite3
 import os
 from datetime import datetime
+from pathlib import Path
 
-# Default database path in the current directory
-DB_PATH = "handovertrail.db"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DB_PATH = Path(os.environ.get("HANDOVERTRAIL_DB", PROJECT_ROOT / "handovertrail.db")).expanduser()
 
 
-def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
+def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
     """Establishes and returns a connection to the SQLite database.
     Enforces foreign key constraint enforcement in SQLite."""
-    conn = sqlite3.connect(db_path)
+    configured_path = Path(
+        db_path if db_path is not None else os.environ.get("HANDOVERTRAIL_DB", DB_PATH)
+    ).expanduser()
+    configured_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(configured_path)
     # Enable foreign key constraint support for SQLite
     conn.execute("PRAGMA foreign_keys = ON;")
     # Return rows as dictionary-like objects for easier field access
@@ -17,8 +22,8 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: str = DB_PATH) -> None:
-    """Creates all 8 required logical tables for HandoverTrail if they do not exist."""
+def bootstrap(db_path: str | Path | None = None) -> None:
+    """Create the schema, apply additive migrations, and seed demo identities/project."""
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
@@ -52,6 +57,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         file_name TEXT NOT NULL,
         file_type TEXT NOT NULL,
         uploaded_at TEXT NOT NULL,
+        sensitivity TEXT NOT NULL DEFAULT 'restricted' CHECK(sensitivity IN ('public', 'restricted')),
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """)
@@ -122,10 +128,43 @@ def init_db(db_path: str = DB_PATH) -> None:
     );
     """)
 
+    source_columns = {
+        row["name"] for row in cursor.execute("PRAGMA table_info(sources)").fetchall()
+    }
+    if "sensitivity" not in source_columns:
+        cursor.execute(
+            "ALTER TABLE sources ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'restricted'"
+        )
+
+    now = datetime.now().isoformat()
+    cursor.executemany("""
+        INSERT OR IGNORE INTO users (user_id, name, email, role, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, [
+        ("USR-DEMO-ADMIN", "Demo Admin", "admin@demo.local", "Admin", now),
+        ("USR-DEMO-REVIEWER", "Demo Reviewer", "reviewer@demo.local", "Reviewer", now),
+        ("USR-DEMO-INCOMING", "Demo Incoming", "incoming@demo.local", "Incoming", now),
+    ])
+    cursor.execute("""
+        INSERT OR IGNORE INTO projects (project_id, name, description, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        "PROJ-DEMO-001",
+        "Demo Project (Team Techtones)",
+        "HandoverTrail MVP Demonstration Project",
+        now,
+        now,
+    ))
+
     conn.commit()
     conn.close()
 
 
+def init_db(db_path: str | Path | None = None) -> None:
+    """Backward-compatible alias for bootstrap()."""
+    bootstrap(db_path)
+
+
 if __name__ == "__main__":
-    init_db()
-    print("Database successfully initialized at:", os.path.abspath(DB_PATH))
+    bootstrap()
+    print("Database successfully initialized at:", DB_PATH)

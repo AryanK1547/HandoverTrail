@@ -6,15 +6,21 @@ import sys
 
 # Ensure parent directory is in path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from database import get_connection, init_db
+from database import bootstrap, get_connection
+
+bootstrap()
 
 st.set_page_config(page_title="Upload Sources - HandoverTrail", page_icon="📁")
 
+st.sidebar.selectbox(
+    "Demo role",
+    ["Admin", "Reviewer", "Incoming"],
+    key="user_role",
+    help="Role switching is simulated for this demo.",
+)
+
 st.title("📁 Upload Project Sources")
 st.markdown("Upload meeting notes, chat logs, git exports, or task CSVs to begin knowledge extraction.")
-
-# Ensure database exists
-init_db()
 
 # Target project ID for MVP session
 PROJECT_ID = "PROJ-DEMO-001"
@@ -116,3 +122,45 @@ if rows:
     st.table(sources_data)
 else:
     st.info("No sources registered yet. Load demo files or upload files above.")
+
+# --- STEP 2: SOURCE PARSING UI ---
+st.divider()
+st.subheader("⚙️ Parse Sources into Evidence Chunks")
+
+if st.button("🔨 Process & Chunk Uploaded Sources"):
+    from source_parser import parse_and_store_sources
+    new_chunks = parse_and_store_sources(PROJECT_ID)
+    if new_chunks > 0:
+        st.success(f"Successfully created and stored {new_chunks} evidence chunks in the database!")
+    else:
+        st.info("Sources are already parsed and stored in the database.")
+
+# --- INSPECT EVIDENCE CHUNKS ---
+st.subheader("🔍 Generated Evidence Chunks")
+
+conn = get_connection()
+cursor = conn.cursor()
+cursor.execute("""
+    SELECT e.evidence_id, s.file_name, e.reference_location, e.excerpt 
+    FROM evidence_chunks e
+    JOIN sources s ON e.source_id = s.source_id
+    WHERE s.project_id = ?
+    ORDER BY s.file_name ASC, e.chunk_index ASC
+""", (PROJECT_ID,))
+evidence_rows = cursor.fetchall()
+conn.close()
+
+if evidence_rows:
+    evd_data = [
+        {
+            "Evidence ID": r["evidence_id"],
+            "Source File": r["file_name"],
+            "Reference Location": r["reference_location"],
+            "Excerpt": r["excerpt"]
+        }
+        for r in evidence_rows
+    ]
+    st.dataframe(evd_data, width="stretch")
+    st.caption(f"Total Evidence Chunks stored: {len(evd_data)}")
+else:
+    st.info("No evidence chunks parsed yet. Click 'Process & Chunk Uploaded Sources' above.")
