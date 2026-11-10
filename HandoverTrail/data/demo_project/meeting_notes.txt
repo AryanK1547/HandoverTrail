@@ -1,18 +1,8 @@
-=== HANDOVERTRAIL TEAM SYNC - OCT 24 ===
-
-Attendees: Aryan, Priya, Rahul
-Host: Aryan
-
-1. ARCHITECTURE DECISION
-- Aryan confirmed backend will use Python 3.11 with SQLite for local dev and optional Supabase PostgreSQL for cloud persistence.
-- Priya questioned if SQLite handles concurrency well on Streamlit Cloud. Aryan noted SQLite is fine for demo/seeded data, but Supabase is needed for persistent judge edits.
-
-2. TASK OWNERSHIP
-- Rahul takes ownership of the Gemini API extraction module (`extractor.py`).
-- Aryan owns `database.py` and core application flow in `app.py`.
-- Priya takes ownership of `permissions.py` and UI components.
-
-3. RISKS AND DEPENDENCIES
-- Gemini API free-tier rate limits could break live judge testing.
-- RISK: If API quota runs out, claim extraction will fail.
-- BLOCKER: Needs cached synthetic fallback mechanism in `extractor.py` by Oct 28.
+=== PAYMENT GATEWAY KICKOFF ===
+Date: Nov 2, 2026
+1. DECISIONS: 
+- Moving forward with Stripe integration. PayPal evaluation is closed.
+2. OWNERSHIP:
+- Sarah will lead the backend Stripe API integration.
+3. RISKS/BLOCKERS:
+- The legacy user database schema isn't compatible with Stripe's customer IDs. We must migrate the DB first.

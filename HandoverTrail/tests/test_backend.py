@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,56 @@ def test_cold_start_claims_are_labeled_cached_demo(isolated_db: Path) -> None:
 
     assert len(claims) == 4
     assert all(claim["claim_source"] == "cached_demo" for claim in claims)
+
+
+def test_cached_claims_match_their_committed_demo_evidence(isolated_db: Path) -> None:
+    cache_path = database.PROJECT_ROOT / "data" / "demo_cache" / "claims.json"
+    cached_claims = json.loads(cache_path.read_text(encoding="utf-8"))["claims"]
+    conn = database.get_connection()
+    evidence = {
+        (row["file_name"], row["chunk_index"]): row["excerpt"]
+        for row in conn.execute(
+            """
+            SELECT s.file_name, e.chunk_index, e.excerpt
+            FROM evidence_chunks e
+            JOIN sources s ON s.source_id = e.source_id
+            WHERE s.project_id = 'PROJ-DEMO-001' AND s.sensitivity = 'public'
+            """
+        )
+    }
+    conn.close()
+
+    expected_support = {
+        "Stripe over PayPal": {
+            ("chat_export.txt", 0): "officially go with Stripe",
+            ("meeting_notes.txt", 1): "PayPal evaluation is closed",
+            ("tasks.csv", 2): "Evaluate PayPal vs Stripe",
+        },
+        "T-103": {
+            ("tasks.csv", 3): "Design Custom Crypto Blockchain System",
+            ("chat_export.txt", 1): "build our own crypto blockchain",
+        },
+        "T-100": {
+            ("tasks.csv", 0): "Backend Stripe API Setup",
+            ("repository_export.txt", 1): "Added stripe-node SDK",
+            ("meeting_notes.txt", 1): "Sarah will lead the backend Stripe API integration",
+        },
+        "T-101": {
+            ("meeting_notes.txt", 2): "legacy user database schema isn't compatible",
+            ("tasks.csv", 1): "Legacy User DB Migration",
+            ("repository_export.txt", 1): "Issue #12 (OPEN)",
+            ("repository_export.txt", 2): "freezing during the user table migration",
+        },
+    }
+    for marker, expected_excerpts in expected_support.items():
+        claim = next(item for item in cached_claims if marker in item["claim_text"])
+        references = {
+            (item["source_file"], item["chunk_index"])
+            for item in claim["evidence"]
+        }
+        assert references == set(expected_excerpts)
+        for location, excerpt_text in expected_excerpts.items():
+            assert excerpt_text in evidence[location]
 
 
 def test_incoming_cannot_see_claim_with_any_restricted_source(isolated_db: Path) -> None:

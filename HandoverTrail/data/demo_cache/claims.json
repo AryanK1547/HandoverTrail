@@ -3,6 +3,7 @@
   "provider": "OpenRouter",
   "model": "deepseek/deepseek-v4.1-flash-1017",
   "generated_at": "2026-11-10T07:32:07.884392+00:00",
+  "evidence_reconciled_at": "2026-11-10",
   "claims": [
     {
       "claim_text": "The team officially chose Stripe over PayPal for the new payment gateway; PayPal was noted as cheaper but Stripe's API cleaner for the stack, and the PayPal evaluation is closed.",
@@ -10,10 +11,6 @@
       "evidence": [
         {
           "source_file": "chat_export.txt",
-          "chunk_index": 0
-        },
-        {
-          "source_file": "meeting_notes.txt",
           "chunk_index": 0
         },
         {
@@ -41,7 +38,7 @@
       ]
     },
     {
-      "claim_text": "Sarah will lead and is implementing the backend Stripe API integration/setup; task T-100 is IN_PROGRESS/High, and commit 4a2b9c added the stripe-node SDK and initialized the client.",
+      "claim_text": "Sarah will lead the backend Stripe API integration/setup; task T-100 is IN_PROGRESS/High, and commit 4a2b9c added the stripe-node SDK and initialized the client.",
       "claim_type": "Owner",
       "evidence": [
         {
@@ -50,20 +47,16 @@
         },
         {
           "source_file": "repository_export.txt",
-          "chunk_index": 0
-        },
-        {
-          "source_file": "meeting_notes.txt",
           "chunk_index": 1
         },
         {
-          "source_file": "repository_export.txt",
+          "source_file": "meeting_notes.txt",
           "chunk_index": 1
         }
       ]
     },
     {
-      "claim_text": "The legacy user DB migration is a critical blocker/dependency for the payment gateway: the schema is incompatible with Stripe customer IDs, the DB must be migrated first, issue #12 is OPEN with staging freezing/table locking during the user table migration, and task T-101 is BLOCKED/Critical owned by Alex.",
+      "claim_text": "The legacy user DB migration is a critical blocker for the payment gateway: the schema is incompatible with Stripe customer IDs, staging is freezing during the user table migration, and task T-101 is BLOCKED/Critical with Alex as owner.",
       "claim_type": "Blocker",
       "evidence": [
         {
