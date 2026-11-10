@@ -1,52 +1,58 @@
 # HandoverTrail
 
-> **AI-Powered Project Handover & Knowledge Continuity Platform**  
-> *Built for Hackathons & Engineering Teams to Eliminate Knowledge Loss During Team Transitions.*
+HandoverTrail turns project notes, chat exports, code summaries, and task lists into an evidence-linked handover.
+Reviewers can inspect and approve candidate claims before they are shown to incoming teammates.
+The demo includes role and source-sensitivity filtering, a local SQLite database, and optional AI extraction.
 
----
+## Workflow
 
-## 📌 Overview
+1. Load the packaged demo or upload `.txt` and `.csv` sources.
+2. Parse sources into excerpts linked to their filenames and chunk locations.
+3. Extract candidate claims with Gemini, then the pinned OpenRouter model, or use the labeled local heuristic fallback.
+4. Review and approve or reject claims as Admin or Reviewer.
+5. View approved, authorized claims and their citations as Incoming.
 
-Team transitions and handovers are often messy. Critical project context is scattered across disparate chat logs, unorganized meeting notes, scattered task boards, and undocumented code changes, leading to severe onboarding friction and lost institutional knowledge.
+An empty database is seeded with demo sources and cached demo claims, so the review flow can be explored without an API call.
 
-**HandoverTrail** solves this by acting as an intelligent handover pipeline. It ingests raw project artifacts (meeting transcripts, chat exports, task sheets, documentation), parses and extracts verifiable project claims using **Google Gemini**, validates evidence trust markers through a hybrid human-in-the-loop review workflow, and generates context-aware, role-appropriate handovers for incoming members.
+## Run locally
 
----
+From the repository root in PowerShell:
 
-## 🏗️ Core Workflow
+```powershell
+Set-Location '.\HandoverTrail'
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
 
-1. **Connect & Upload Sources:** Ingest project files (Markdown, text logs, meeting notes, CSVs).
-2. **Knowledge Reconstruction:** Parse documents into source-aware chunks and extract candidate claims via Gemini.
-3. **Evidence Grounding:** Link every claim directly to its exact source text excerpt.
-4. **Trust Validation:** Automatically flag claims as `VERIFIED`, `SINGLE_SOURCE`, `CONFLICTING`, or `MISSING_EVIDENCE`.
-5. **Human Review & Approval:** Reviewers inspect, edit, approve, or reject claims before final sign-off.
-6. **Role-Based Handover:** Provide incoming team members with clean, verified, role-specific handover briefs complete with open risks and action items.
+The app uses `handovertrail.db` beside `database.py` by default. Set `HANDOVERTRAIL_DB` to choose another SQLite file. Uploads are stored under `uploads/<project_id>/`.
 
----
+To install the test dependency and run the backend suite:
 
-## 🛠️ Tech Stack & Architecture
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q tests
+```
 
-* **Frontend & UI:** [Streamlit](https://streamlit.io/) (Python-based interactive web app)
-* **Backend Logic & AI Extraction:** Python 3.11+, **Google Gemini API** (`google-generativeai`)
-* **Storage & Persistence:** 
-  * *Local Development / Demo:* SQLite (lightweight, zero-config, reproducible via seed data)
-  * *Cloud Production (Optional):* PostgreSQL / Supabase
-* **Deployment:** Streamlit Community Cloud & GitHub
+## AI provider configuration
 
----
+Optional Streamlit secrets are named `GEMINI_API_KEY` and `OPENROUTER_API_KEY`. Do not commit credentials.
 
-## 📂 Project Directory Structure
+Gemini uses `gemini-3.6-flash`. If Gemini is unavailable, the configured OpenRouter fallback is `deepseek/deepseek-v4.1-flash-1017`. If neither provider can be used, the app labels its local heuristic fallback. AI extraction is limited to three runs per browser session.
 
-```text
-HandoverTrail/
-├── app.py                 # Main Streamlit application entry point
-├── database.py            # Database connection & schema management (SQLite/Postgres)
-├── models.py              # Data models and structures
-├── source_parser.py       # Ingestion and parsing logic for uploaded files
-├── retrieval.py           # Excerpt search and retrieval logic
-├── extractor.py           # Gemini API integration for claim extraction
-├── validator.py           # Evidence trust status checks
-├── permissions.py         # Role-based access control helpers
-├── handover.py            # Handover generation logic
-├── requirements.txt       # Python package dependencies
-└── README.md              # Project documentation
+Extraction prompts may include excerpts from restricted sources. Sensitivity filtering happens when data is read for display; it does not prevent restricted text from being sent to an AI provider during extraction. Do not use the demo role selector as a security boundary.
+
+## Roles and evidence labels
+
+- **Admin** and **Reviewer** can read public and restricted demo sources and can review claims.
+- **Incoming** can read approved claims only when every linked source is public.
+- Roles are simulated by a Streamlit selector; there is no login or authenticated identity.
+- **Corroborated (2+ source files)** means a claim links to evidence from at least two distinct files. It does not check whether those files agree; conflict detection is not implemented.
+
+The demo's restricted source is synthetic test data, not a real credential or contact record.
+
+## Streamlit Community Cloud
+
+Deployment was not performed or verified during QA. For a trial deployment, connect the repository, select `HandoverTrail/app.py`, ensure `HandoverTrail/requirements.txt` is installed, and configure the optional secret names above in the Cloud settings.
+
+The app writes SQLite data and uploaded files to local storage. Streamlit-hosted local files are not a durable persistence service, so edits or uploads may be lost when an instance is replaced. Use durable external storage and real authentication before production use.
