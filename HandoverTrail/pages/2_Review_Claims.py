@@ -96,6 +96,8 @@ st.caption(
 claims = get_visible_claims(user_role, PROJECT_ID)
 
 if claims:
+    if any(c["claim_source"] == "cached_demo" for c in claims):
+        st.info("Cached demo claims are included below for review without an API call.")
     for c in claims:
         claim_id = c["claim_id"]
         trust_labels = {
@@ -107,8 +109,12 @@ if claims:
         trust_label = trust_labels.get(c["trust_status"], "Unknown")
         trust_color = "🟢" if c["trust_status"] == "VERIFIED" else "🟡" if c["trust_status"] == "SINGLE_SOURCE" else "🔴"
         review_icon = "⏳" if c["review_status"] == "PENDING" else "✅" if c["review_status"] == "APPROVED" else "❌"
-        
-        with st.expander(f"{review_icon} {trust_color} [{trust_label}] [{c['claim_type']}] {c['claim_text'][:80]}..."):
+        source_label = " [Cached demo claim]" if c["claim_source"] == "cached_demo" else ""
+
+        with st.expander(
+            f"{review_icon} {trust_color} [{trust_label}] [{c['claim_type']}]"
+            f"{source_label} {c['claim_text'][:80]}..."
+        ):
             st.write("**Full Claim Text:**", c["claim_text"])
             st.write(f"**Claim ID:** `{claim_id}` | **Type:** `{c['claim_type']}` | **Review Status:** `{c['review_status']}`")
 

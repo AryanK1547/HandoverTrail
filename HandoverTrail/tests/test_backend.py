@@ -88,6 +88,13 @@ def _create_claim(
     conn.close()
 
 
+def test_cold_start_claims_are_labeled_cached_demo(isolated_db: Path) -> None:
+    claims = retrieval.get_visible_claims("Reviewer", "PROJ-DEMO-001")
+
+    assert len(claims) == 4
+    assert all(claim["claim_source"] == "cached_demo" for claim in claims)
+
+
 def test_incoming_cannot_see_claim_with_any_restricted_source(isolated_db: Path) -> None:
     _create_project()
     public = _create_source("SRC-PUBLIC", "public.txt", "public", "Public evidence")

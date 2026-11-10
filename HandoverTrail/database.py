@@ -85,6 +85,7 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         claim_text TEXT NOT NULL,
         claim_type TEXT NOT NULL CHECK(claim_type IN ('Decision', 'Owner', 'Risk', 'Dependency', 'Blocker', 'Open question', 'Next action')),
         trust_status TEXT NOT NULL CHECK(trust_status IN ('VERIFIED', 'SINGLE_SOURCE', 'CONFLICTING', 'MISSING_EVIDENCE')),
+        claim_source TEXT NOT NULL DEFAULT 'generated',
         review_status TEXT NOT NULL CHECK(review_status IN ('PENDING', 'APPROVED', 'REJECTED', 'EDITED_PENDING_REVIEW')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -136,6 +137,13 @@ def bootstrap(db_path: str | Path | None = None) -> None:
     if "sensitivity" not in source_columns:
         cursor.execute(
             "ALTER TABLE sources ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'restricted'"
+        )
+    claim_columns = {
+        row["name"] for row in cursor.execute("PRAGMA table_info(claims)").fetchall()
+    }
+    if "claim_source" not in claim_columns:
+        cursor.execute(
+            "ALTER TABLE claims ADD COLUMN claim_source TEXT NOT NULL DEFAULT 'generated'"
         )
 
     now = datetime.now().isoformat()
@@ -259,9 +267,9 @@ def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
         conn.execute(
             """
             INSERT INTO claims
-                (claim_id, project_id, claim_text, claim_type, trust_status,
+                (claim_id, project_id, claim_text, claim_type, trust_status, claim_source,
                  review_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'cached_demo', 'PENDING', ?, ?)
             """,
             (
                 claim_id,

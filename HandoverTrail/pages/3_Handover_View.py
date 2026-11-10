@@ -53,8 +53,9 @@ if approved_claims:
                 "CONFLICTING": "Conflicting",
             }
             trust_badge = trust_labels.get(c["trust_status"], "Unknown")
-            
-            with st.expander(f"{trust_badge} {c['claim_text'][:60]}..."):
+            source_label = "Cached demo claim | " if c["claim_source"] == "cached_demo" else ""
+
+            with st.expander(f"{source_label}{trust_badge} {c['claim_text'][:60]}..."):
                 st.write(f"**{c['claim_text']}**")
                 
                 # Fetch evidence for transparency
