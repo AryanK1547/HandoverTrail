@@ -1,5 +1,7 @@
 import sqlite3
 import os
+import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -156,6 +158,125 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         now,
     ))
 
+    conn.commit()
+    conn.close()
+    _seed_empty_demo_database(db_path)
+
+
+def _seed_empty_demo_database(db_path: str | Path | None = None) -> None:
+    project_id = "PROJ-DEMO-001"
+    conn = get_connection(db_path)
+    source_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+    evidence_count = conn.execute("SELECT COUNT(*) FROM evidence_chunks").fetchone()[0]
+    claim_count = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+    if source_count or evidence_count or claim_count:
+        conn.close()
+        return
+
+    demo_dir = PROJECT_ROOT / "data" / "demo_project"
+    demo_files = sorted(
+        path for path in demo_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".txt", ".csv"}
+    )
+    if not demo_files:
+        conn.close()
+        raise FileNotFoundError(f"No demo source files found in {demo_dir}")
+
+    source_ids = []
+    now = datetime.now().isoformat()
+    for path in demo_files:
+        source_id = f"SRC-{uuid.uuid4().hex[:8].upper()}"
+        sensitivity = "restricted" if path.name == "restricted_demo.txt" else "public"
+        conn.execute(
+            """
+            INSERT INTO sources
+                (source_id, project_id, file_name, file_type, uploaded_at, sensitivity)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (source_id, project_id, path.name, path.suffix[1:].upper(), now, sensitivity),
+        )
+        source_ids.append(source_id)
+    conn.commit()
+    conn.close()
+
+    from source_parser import parse_and_store_sources
+
+    parse_and_store_sources(
+        project_id,
+        source_ids=source_ids,
+        db_path=db_path,
+        prefer_demo=True,
+    )
+    _seed_cached_demo_claims(db_path)
+
+
+def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
+    cache_path = PROJECT_ROOT / "data" / "demo_cache" / "claims.json"
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    project_id = "PROJ-DEMO-001"
+    if cache.get("project_id") != project_id:
+        raise ValueError(f"Cached claims must target {project_id}.")
+
+    conn = get_connection(db_path)
+    if conn.execute(
+        "SELECT COUNT(*) FROM claims WHERE project_id = ?", (project_id,)
+    ).fetchone()[0]:
+        conn.close()
+        return
+
+    evidence_by_location = {
+        (row["file_name"], row["chunk_index"]): row["evidence_id"]
+        for row in conn.execute(
+            """
+            SELECT s.file_name, e.chunk_index, e.evidence_id
+            FROM evidence_chunks e
+            JOIN sources s ON e.source_id = s.source_id
+            WHERE s.project_id = ?
+            """,
+            (project_id,),
+        )
+    }
+    now = datetime.now().isoformat()
+    for cached_claim in cache.get("claims", []):
+        evidence_ids = []
+        source_files = set()
+        for reference in cached_claim.get("evidence", []):
+            location = (reference.get("source_file"), reference.get("chunk_index"))
+            evidence_id = evidence_by_location.get(location)
+            if evidence_id is None:
+                conn.close()
+                raise ValueError(
+                    f"Cached claim references missing demo evidence: {location[0]} chunk {location[1]}."
+                )
+            evidence_ids.append(evidence_id)
+            source_files.add(location[0])
+        if not evidence_ids:
+            conn.close()
+            raise ValueError("Every cached demo claim must include at least one evidence link.")
+
+        claim_id = f"CLM-{uuid.uuid4().hex[:8].upper()}"
+        trust_status = "VERIFIED" if len(source_files) >= 2 else "SINGLE_SOURCE"
+        conn.execute(
+            """
+            INSERT INTO claims
+                (claim_id, project_id, claim_text, claim_type, trust_status,
+                 review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)
+            """,
+            (
+                claim_id,
+                project_id,
+                cached_claim["claim_text"],
+                cached_claim["claim_type"],
+                trust_status,
+                now,
+                now,
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?)",
+            [(claim_id, evidence_id) for evidence_id in sorted(set(evidence_ids))],
+        )
     conn.commit()
     conn.close()
 

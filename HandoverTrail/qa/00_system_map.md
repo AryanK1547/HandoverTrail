@@ -24,7 +24,7 @@ Streamlit Upload Sources page
          ▼
 Review Claims page → `extractor.py`
   ├─ Gemini (`gemini-3.6-flash`)
-  ├─ OpenRouter if Gemini fails
+  ├─ OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) if Gemini fails
   └─ local keyword heuristic if both AI providers fail
          │
          ▼
@@ -40,8 +40,8 @@ Review Claims page → `extractor.py`
 | Component | Observed responsibility |
 |---|---|
 | `app.py` | Landing page, workflow summary, demo source loader, and session-persisted role selector. |
-| `database.py` | Creates eight SQLite tables, applies the additive source-sensitivity migration, seeds demo users/project, and enables foreign keys per connection. |
-| `source_parser.py` | Validates and persists `.txt`/`.csv` uploads under `uploads/<project>/`; parses UTF-8 BOM or Latin-1 text and ragged CSV rows; reparses only selected or unprocessed sources. |
+| `database.py` | Creates eight SQLite tables, applies the additive source-sensitivity migration, seeds demo users/project, and on an empty database parses packaged demo sources and seeds cached claims as pending. |
+| `source_parser.py` | Validates and persists `.txt`/`.csv` uploads under `uploads/<project>/`; parses UTF-8 BOM or Latin-1 text and ragged CSV rows; reparses only selected or unprocessed sources. Cold-start demo parsing prefers packaged files. |
 | `extractor.py` | Builds an evidence prompt, validates returned claim types and evidence IDs, calls Gemini then OpenRouter, and falls back to keyword grouping. Saves generated claims and their evidence links. |
 | `validator.py` | Sets `MISSING_EVIDENCE` when no linked evidence exists, `VERIFIED` when linked chunks come from two or more distinct filenames, otherwise `SINGLE_SOURCE`. |
 | `permissions.py` | Normalizes simulated role names, checks sensitivity/review capability, and authorizes review writes with review/audit records. |
@@ -73,7 +73,7 @@ Review Claims page → `extractor.py`
 
 ## Phase 0 scope boundary
 
-This document records static reconnaissance only. Static checks, dependency auditing, automated test authoring/runs, browser testing, and fixes are deferred to later phases.
+This document began as Phase 0/1 static reconnaissance; implementation and later verification updates are recorded below.
 
 ## Local run and demo database commands
 
@@ -84,7 +84,7 @@ Set-Location 'D:\STudy\Hackathon\CodersInPune\HandoverTrail'
 .\.venv\Scripts\streamlit.exe run app.py
 ```
 
-To reset the demo database to an empty schema, first make a timestamped backup in the system temp directory, then remove and recreate the database:
+To reset the demo database to a fresh seeded demo state, first make a timestamped backup in the system temp directory, then remove and bootstrap the database:
 
 ```powershell
 Set-Location 'D:\STudy\Hackathon\CodersInPune\HandoverTrail'
@@ -98,7 +98,7 @@ Remove-Item .\handovertrail.db -Force -ErrorAction SilentlyContinue
 .\.venv\Scripts\streamlit.exe run app.py
 ```
 
-This reset is destructive to the current database; keep the printed backup path if existing data may be needed. After reset, open **Upload Sources**, load the packaged demo files, and process/chunk them to repopulate the demo workflow.
+This reset is destructive to the current database; keep the printed backup path if existing data may be needed. Bootstrap automatically registers and parses packaged demo sources and seeds cached claims as pending; no API call is needed for the initial claims.
 
 ## Phase 1 verification record
 

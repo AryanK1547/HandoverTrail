@@ -67,6 +67,9 @@ if st.button("🚀 Load demo project", type="primary"):
     from source_parser import parse_and_store_sources
 
     chunks = parse_and_store_sources(project_id)
-    st.success(f"Demo project ready: {added} sources registered and {chunks} evidence chunks loaded.")
+    st.success(
+        f"Demo project ready: {added} sources registered and {chunks} new evidence chunks loaded. "
+        "Cached claims are available on the Review Claims page."
+    )
 
 st.info("Use the pages in the sidebar to upload sources, review claims, and view the handover.")

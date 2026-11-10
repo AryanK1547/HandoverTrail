@@ -61,11 +61,13 @@ def _csv_row_text(row: dict) -> str:
     return ", ".join(fields)
 
 
-def _source_path(project_id: str, file_name: str) -> Path:
+def _source_path(project_id: str, file_name: str, prefer_demo: bool = False) -> Path:
+    demo_path = PROJECT_ROOT / "data" / "demo_project" / file_name
+    upload_path = UPLOADS_DIR / project_id / file_name
     candidates = (
-        UPLOADS_DIR / project_id / file_name,
-        PROJECT_ROOT / "data" / "demo_project" / file_name,
-        PROJECT_ROOT / file_name,
+        (demo_path, upload_path, PROJECT_ROOT / file_name)
+        if prefer_demo
+        else (upload_path, demo_path, PROJECT_ROOT / file_name)
     )
     for candidate in candidates:
         if candidate.is_file():
@@ -77,9 +79,11 @@ def parse_and_store_sources(
     project_id: str = "PROJ-DEMO-001",
     force_reparse: bool = False,
     source_ids: Iterable[str] | None = None,
+    db_path: str | Path | None = None,
+    prefer_demo: bool = False,
 ) -> int:
     """Parse only pending or explicitly changed sources into evidence chunks."""
-    conn = get_connection()
+    conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
         query = """
@@ -107,7 +111,7 @@ def parse_and_store_sources(
         for source in sources:
             source_id = source["source_id"]
             file_name = source["file_name"]
-            file_path = _source_path(project_id, file_name)
+            file_path = _source_path(project_id, file_name, prefer_demo)
             suffix = Path(file_name).suffix.lower()
             text = _read_text(file_path)
             chunks = []
