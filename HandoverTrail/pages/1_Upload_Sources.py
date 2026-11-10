@@ -2,11 +2,13 @@ import streamlit as st
 import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 import sys
 
 # Ensure parent directory is in path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from database import bootstrap, get_connection
+from source_parser import parse_and_store_sources, persist_uploaded_file, sanitize_upload_filename
 
 bootstrap()
 
@@ -24,18 +26,6 @@ st.markdown("Upload meeting notes, chat logs, git exports, or task CSVs to begin
 
 # Target project ID for MVP session
 PROJECT_ID = "PROJ-DEMO-001"
-
-# Guarantee default demo project exists in DB
-conn = get_connection()
-cursor = conn.cursor()
-cursor.execute("SELECT project_id FROM projects WHERE project_id = ?", (PROJECT_ID,))
-if not cursor.fetchone():
-    cursor.execute(
-        "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (PROJECT_ID, "Demo Project (Team Techtones)", "HandoverTrail MVP Demonstration Project", datetime.now().isoformat(), datetime.now().isoformat())
-    )
-    conn.commit()
-conn.close()
 
 # --- DEMO DATA LOADER BUTTON ---
 st.subheader("Option A: Load Demo Synthetic Dataset")
@@ -76,36 +66,85 @@ st.divider()
 
 # --- FILE UPLOADER UI ---
 st.subheader("Option B: Upload Custom Source Files")
-uploaded_files = st.file_uploader(
-    "Choose files (.txt, .csv)", 
-    type=["txt", "csv"], 
-    accept_multiple_files=True
-)
+with st.form("source_upload_form"):
+    uploaded_files = st.file_uploader(
+        "Choose files (.txt, .csv; maximum 2 MB per file)",
+        type=["txt", "csv"],
+        accept_multiple_files=True,
+    )
+    sensitivity = st.selectbox(
+        "Source sensitivity",
+        ["restricted", "public"],
+        index=0,
+        format_func=str.title,
+    )
+    upload_submitted = st.form_submit_button("Save and process uploaded files")
 
-if uploaded_files:
+if upload_submitted and uploaded_files:
     conn = get_connection()
     cursor = conn.cursor()
-    saved_count = 0
-    
+    changed_source_ids = []
+    saved_files = []
+    replaced_files = []
+    rejected_files = []
+
     for uploaded_file in uploaded_files:
-        source_id = f"SRC-{uuid.uuid4().hex[:8].upper()}"
-        file_name = uploaded_file.name
-        file_type = file_name.split(".")[-1].upper()
-        uploaded_at = datetime.now().isoformat()
-        
-        # Avoid duplicate filename records for demo stability
-        cursor.execute("SELECT source_id FROM sources WHERE project_id = ? AND file_name = ?", (PROJECT_ID, file_name))
-        if not cursor.fetchone():
-            cursor.execute(
-                "INSERT INTO sources (source_id, project_id, file_name, file_type, uploaded_at) VALUES (?, ?, ?, ?, ?)",
-                (source_id, PROJECT_ID, file_name, file_type, uploaded_at)
+        try:
+            file_name = sanitize_upload_filename(uploaded_file.name)
+            saved_path, path_replaced = persist_uploaded_file(
+                PROJECT_ID,
+                file_name,
+                uploaded_file.getvalue(),
             )
-            saved_count += 1
-            
+        except ValueError as exc:
+            rejected_files.append(f"{uploaded_file.name}: {exc}")
+            continue
+
+        existing = cursor.execute(
+            "SELECT source_id FROM sources WHERE project_id = ? AND file_name = ?",
+            (PROJECT_ID, file_name),
+        ).fetchone()
+        replaced = path_replaced or existing is not None
+        if existing:
+            source_id = existing["source_id"]
+            cursor.execute("""
+                UPDATE sources
+                SET file_type = ?, uploaded_at = ?, sensitivity = ?
+                WHERE source_id = ?
+            """, (Path(file_name).suffix.lstrip(".").upper(), datetime.now().isoformat(), sensitivity, source_id))
+        else:
+            source_id = f"SRC-{uuid.uuid4().hex[:8].upper()}"
+            cursor.execute("""
+                INSERT INTO sources
+                    (source_id, project_id, file_name, file_type, uploaded_at, sensitivity)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                source_id,
+                PROJECT_ID,
+                file_name,
+                Path(file_name).suffix.lstrip(".").upper(),
+                datetime.now().isoformat(),
+                sensitivity,
+            ))
+        changed_source_ids.append(source_id)
+        saved_files.append((file_name, saved_path))
+        if replaced:
+            replaced_files.append(file_name)
+
     conn.commit()
     conn.close()
-    if saved_count > 0:
-        st.success(f"Successfully registered {saved_count} file(s) in database!")
+
+    for message in rejected_files:
+        st.warning(message)
+    if changed_source_ids:
+        chunks_created = parse_and_store_sources(PROJECT_ID, source_ids=changed_source_ids)
+        for file_name, _ in saved_files:
+            st.success(f"Saved {file_name} ({sensitivity}) and parsed its updated evidence.")
+        for file_name in replaced_files:
+            st.info(f"Replaced existing file: {file_name}")
+        st.success(f"Created {chunks_created} evidence chunks from updated uploads.")
+elif upload_submitted:
+    st.info("Choose at least one .txt or .csv file to upload.")
 
 st.divider()
 
@@ -113,12 +152,12 @@ st.divider()
 st.subheader("📋 Currently Uploaded Sources")
 conn = get_connection()
 cursor = conn.cursor()
-cursor.execute("SELECT source_id, file_name, file_type, uploaded_at FROM sources WHERE project_id = ?", (PROJECT_ID,))
+cursor.execute("SELECT source_id, file_name, file_type, sensitivity, uploaded_at FROM sources WHERE project_id = ?", (PROJECT_ID,))
 rows = cursor.fetchall()
 conn.close()
 
 if rows:
-    sources_data = [{"Source ID": r["source_id"], "File Name": r["file_name"], "Type": r["file_type"], "Uploaded At": r["uploaded_at"]} for r in rows]
+    sources_data = [{"Source ID": r["source_id"], "File Name": r["file_name"], "Type": r["file_type"], "Sensitivity": r["sensitivity"], "Uploaded At": r["uploaded_at"]} for r in rows]
     st.table(sources_data)
 else:
     st.info("No sources registered yet. Load demo files or upload files above.")
@@ -128,12 +167,11 @@ st.divider()
 st.subheader("⚙️ Parse Sources into Evidence Chunks")
 
 if st.button("🔨 Process & Chunk Uploaded Sources"):
-    from source_parser import parse_and_store_sources
     new_chunks = parse_and_store_sources(PROJECT_ID)
     if new_chunks > 0:
-        st.success(f"Successfully created and stored {new_chunks} evidence chunks in the database!")
+        st.success(f"Successfully created and stored {new_chunks} evidence chunks for unprocessed sources!")
     else:
-        st.info("Sources are already parsed and stored in the database.")
+        st.info("All registered sources already have evidence chunks.")
 
 # --- INSPECT EVIDENCE CHUNKS ---
 st.subheader("🔍 Generated Evidence Chunks")
