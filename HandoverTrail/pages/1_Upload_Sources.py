@@ -10,17 +10,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from database import bootstrap, get_connection
 from source_parser import parse_and_store_sources, persist_uploaded_file, sanitize_upload_filename
 from retrieval import get_visible_evidence_chunks, get_visible_sources
+from ui_helpers import render_role_selector
 
 bootstrap()
 
 st.set_page_config(page_title="Upload Sources - HandoverTrail", page_icon="📁")
 
-st.sidebar.selectbox(
-    "Demo role",
-    ["Admin", "Reviewer", "Incoming"],
-    key="user_role",
-    help="Role switching is simulated for this demo.",
-)
+render_role_selector()
 
 st.title("📁 Upload Project Sources")
 st.markdown("Upload meeting notes, chat logs, git exports, or task CSVs to begin knowledge extraction.")

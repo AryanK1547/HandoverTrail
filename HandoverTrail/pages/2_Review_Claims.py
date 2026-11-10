@@ -8,18 +8,14 @@ from database import bootstrap
 from extractor import extract_claims_from_evidence
 from permissions import can_review, perform_claim_review
 from retrieval import get_claim_evidence, get_visible_claims
+from ui_helpers import render_role_selector
 from validator import validate_project_claims
 
 bootstrap()
 
 st.set_page_config(page_title="Review Claims - HandoverTrail", page_icon="⚖️")
 
-st.sidebar.selectbox(
-    "Demo role",
-    ["Admin", "Reviewer", "Incoming"],
-    key="user_role",
-    help="Role switching is simulated for this demo.",
-)
+render_role_selector()
 
 st.title("⚖️ Candidate Claims & Verification Engine")
 st.markdown("Extract structured claims from evidence, inspect linked sources, and perform human reviews.")

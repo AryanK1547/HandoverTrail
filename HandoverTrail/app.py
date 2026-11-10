@@ -3,17 +3,13 @@ import uuid
 import streamlit as st
 
 from database import bootstrap, get_connection
+from ui_helpers import render_role_selector
 
 bootstrap()
 
 st.set_page_config(page_title="HandoverTrail", page_icon="🤝", layout="wide")
 
-st.sidebar.selectbox(
-    "Demo role",
-    ["Admin", "Reviewer", "Incoming"],
-    key="user_role",
-    help="Role switching is simulated for this demo.",
-)
+render_role_selector()
 
 st.title("HandoverTrail")
 st.markdown("Turn scattered project files into a clear, evidence-linked handover.")

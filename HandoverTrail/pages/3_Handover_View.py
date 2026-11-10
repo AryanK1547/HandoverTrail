@@ -6,17 +6,13 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from database import bootstrap
 from retrieval import count_hidden_claims, get_claim_evidence, get_visible_claims
+from ui_helpers import render_role_selector
 
 bootstrap()
 
 st.set_page_config(page_title="Handover View - HandoverTrail", page_icon="🤝")
 
-st.sidebar.selectbox(
-    "Demo role",
-    ["Admin", "Reviewer", "Incoming"],
-    key="user_role",
-    help="Role switching is simulated for this demo.",
-)
+render_role_selector()
 
 st.title("🤝 Official Project Handover")
 st.markdown("Welcome to the team! Below is the human-approved project knowledge you need to get up to speed.")
