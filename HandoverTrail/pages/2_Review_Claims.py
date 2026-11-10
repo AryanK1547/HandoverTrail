@@ -33,12 +33,22 @@ st.subheader("⚡ Action Controls")
 # API keys stay in Streamlit secrets and are never displayed in the UI.
 api_key_secret = st.secrets.get("GEMINI_API_KEY", None)
 openrouter_api_key_secret = st.secrets.get("OPENROUTER_API_KEY", None)
-openrouter_model = st.secrets.get("OPENROUTER_MODEL", "openrouter/auto")
+if "ai_extraction_runs" not in st.session_state:
+    st.session_state["ai_extraction_runs"] = 0
+MAX_AI_EXTRACTION_RUNS = 3
 
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("🤖 1. Extract Claims", width="stretch", disabled=not can_review(user_role)):
+    limit_reached = st.session_state["ai_extraction_runs"] >= MAX_AI_EXTRACTION_RUNS
+    if limit_reached:
+        st.info("AI extraction limit reached for this session; cached demo claims are being used.")
+    if st.button(
+        "🤖 1. Extract Claims",
+        width="stretch",
+        disabled=not can_review(user_role) or limit_reached,
+    ):
+        st.session_state["ai_extraction_runs"] += 1
         progress_bar = st.progress(0, text="Starting claim extraction...")
 
         def update_extraction_progress(value, message):
@@ -48,7 +58,6 @@ with col1:
             PROJECT_ID,
             api_key=api_key_secret,
             openrouter_api_key=openrouter_api_key_secret,
-            openrouter_model=openrouter_model,
             progress_callback=update_extraction_progress,
         )
         if res.get("status") == "success":
@@ -60,6 +69,8 @@ with col1:
                     st.info(res["fallback_reason"])
         else:
             st.error(res.get("message"))
+        if st.session_state["ai_extraction_runs"] >= MAX_AI_EXTRACTION_RUNS:
+            st.info("AI extraction limit reached for this session; cached demo claims are being used.")
 
 with col2:
     if st.button("🔍 2. Validate Evidence", width="stretch", disabled=not can_review(user_role)):
