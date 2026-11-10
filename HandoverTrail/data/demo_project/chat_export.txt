@@ -1,0 +1,6 @@
+[2026-10-25 14:10] Priya: @Aryan are we storing evidence chunk mappings directly in the claims table?
+[2026-10-25 14:12] Aryan: No, we decided on a junction table `claim_evidence` because one claim can have multiple supporting evidence excerpts, and vice versa.
+[2026-10-25 14:15] Rahul: What about role-based access? When does filtering happen?
+[2026-10-25 14:18] Aryan: Critical rule — filtering MUST happen before evidence retrieval and before passing data to Gemini. Incoming users cannot see unapproved claims.
+[2026-10-25 15:02] Rahul: Got it. OPEN QUESTION: Do we support live OAuth for Round 2?
+[2026-10-25 15:05] Aryan: No, live OAuth is explicitly out of scope for Round 2. We use simple demo role switching (Admin, Reviewer, Incoming).

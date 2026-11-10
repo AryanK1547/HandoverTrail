@@ -1,0 +1,12 @@
+=== GITHUB ISSUE #12: Evidence ID Validation ===
+Status: OPEN
+Assignee: Rahul
+
+Description:
+When extracting claims, Gemini might reference non-existent evidence IDs (hallucinations).
+`validator.py` must check every candidate claim's supporting evidence against the database.
+If an evidence ID is invalid, set trust_status to MISSING_EVIDENCE. Do not auto-approve claims.
+
+=== GITHUB COMMIT: a8f9c12 ===
+Author: Aryan
+Message: Initialized 8 core SQLite tables with foreign key enforcement enabled.

@@ -1,0 +1,18 @@
+=== HANDOVERTRAIL TEAM SYNC - OCT 24 ===
+
+Attendees: Aryan, Priya, Rahul
+Host: Aryan
+
+1. ARCHITECTURE DECISION
+- Aryan confirmed backend will use Python 3.11 with SQLite for local dev and optional Supabase PostgreSQL for cloud persistence.
+- Priya questioned if SQLite handles concurrency well on Streamlit Cloud. Aryan noted SQLite is fine for demo/seeded data, but Supabase is needed for persistent judge edits.
+
+2. TASK OWNERSHIP
+- Rahul takes ownership of the Gemini API extraction module (`extractor.py`).
+- Aryan owns `database.py` and core application flow in `app.py`.
+- Priya takes ownership of `permissions.py` and UI components.
+
+3. RISKS AND DEPENDENCIES
+- Gemini API free-tier rate limits could break live judge testing.
+- RISK: If API quota runs out, claim extraction will fail.
+- BLOCKER: Needs cached synthetic fallback mechanism in `extractor.py` by Oct 28.

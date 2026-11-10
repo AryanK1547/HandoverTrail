@@ -1,0 +1,6 @@
+task_id,title,owner,status,priority
+TASK-01,Database schema setup,Aryan,COMPLETED,P0
+TASK-02,Source parser implementation,Priya,IN_PROGRESS,P0
+TASK-03,Gemini extraction fallback,Rahul,PENDING,P0
+TASK-04,Role permissions filter,Priya,PENDING,P1
+TASK-05,Supabase migration evaluation,Aryan,PENDING,P2
