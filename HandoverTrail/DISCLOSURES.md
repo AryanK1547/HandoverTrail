@@ -2,7 +2,7 @@
 
 ## AI tools and models
 
-- Copilot-assisted development was used for implementation and QA documentation.
+- GitHub Copilot (Copilot SDK in VS Code) assisted implementation and QA documentation. No other AI coding assistant was recorded.
 - Gemini model availability was checked for the configured key; extraction is pinned to `gemini-3.6-flash`.
 - OpenRouter was tested with one real structured request and is pinned to `deepseek/deepseek-v4.1-flash-1017`.
 - The cold-start claim cache contains claim text produced from the packaged demo material. During QA, its source fixture files were aligned with the committed cache and evidence references were narrowed to relevant excerpts. No additional provider request was made for this correction.
@@ -14,6 +14,8 @@
 Runtime dependencies listed in `requirements.txt`: Streamlit, pandas, and `google-genai`.
 
 Development dependency listed in `requirements-dev.txt`: pytest.
+
+Third-party packages are installed from the pinned versions recorded in `requirements.txt` and `requirements-dev.txt`.
 
 ## Data
 
