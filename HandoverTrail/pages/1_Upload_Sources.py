@@ -7,7 +7,7 @@ import sys
 
 # Ensure parent directory is in path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from database import bootstrap, get_connection
+from database import PROJECT_ROOT, bootstrap, get_connection
 from source_parser import parse_and_store_sources, persist_uploaded_file, sanitize_upload_filename
 from retrieval import get_visible_evidence_chunks, get_visible_sources
 from ui_helpers import render_role_selector
@@ -27,7 +27,7 @@ PROJECT_ID = "PROJ-DEMO-001"
 # --- DEMO DATA LOADER BUTTON ---
 st.subheader("Option A: Load Demo Synthetic Dataset")
 if st.button("🚀 Load Pre-packaged Demo Files"):
-    demo_dir = os.path.join("data", "demo_project")
+    demo_dir = PROJECT_ROOT / "data" / "demo_project"
     if os.path.exists(demo_dir):
         loaded_count = 0
         conn = get_connection()

@@ -146,6 +146,43 @@ def test_cached_claims_match_their_committed_demo_evidence(isolated_db: Path) ->
             assert excerpt_text in evidence[location]
 
 
+def test_bootstrap_and_demo_paths_work_from_repository_parent(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(database.PROJECT_ROOT.parent)
+
+    database.bootstrap()
+
+    conn = database.get_connection()
+    source_count = conn.execute(
+        "SELECT COUNT(*) FROM sources WHERE project_id = 'PROJ-DEMO-001'"
+    ).fetchone()[0]
+    evidence_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM evidence_chunks e
+        JOIN sources s ON s.source_id = e.source_id
+        WHERE s.project_id = 'PROJ-DEMO-001'
+        """
+    ).fetchone()[0]
+    cached_claim_count = conn.execute(
+        "SELECT COUNT(*) FROM claims WHERE project_id = 'PROJ-DEMO-001' AND claim_source = 'cached_demo'"
+    ).fetchone()[0]
+    conn.close()
+
+    expected_demo_dir = database.PROJECT_ROOT / "data" / "demo_project"
+    assert source_count == 5
+    assert evidence_count == 14
+    assert cached_claim_count == 4
+    assert source_parser._source_path(
+        "PROJ-DEMO-001",
+        "meeting_notes.txt",
+        prefer_demo=True,
+    ) == expected_demo_dir / "meeting_notes.txt"
+    assert source_parser.UPLOADS_DIR == database.PROJECT_ROOT / "uploads"
+
+
 def test_incoming_cannot_see_claim_with_any_restricted_source(isolated_db: Path) -> None:
     _create_project()
     public = _create_source("SRC-PUBLIC", "public.txt", "public", "Public evidence")
