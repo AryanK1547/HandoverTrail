@@ -2,12 +2,25 @@
 
 ## AI tools and models
 
-- GitHub Copilot (Copilot SDK in VS Code) assisted implementation and QA documentation. No other AI coding assistant was recorded.
-- Gemini model availability was checked for the configured key; extraction is pinned to `gemini-3.6-flash`.
-- OpenRouter was tested with one real structured request and is pinned to `deepseek/deepseek-v4.1-flash-1017`.
-- The cold-start claim cache contains claim text produced from the packaged demo material. During QA, its source fixture files were aligned with the committed cache and evidence references were narrowed to relevant excerpts. No additional provider request was made for this correction.
-- Four real provider calls were used during this approved phase; the maximum was five. The final clean-clone judge journey made no provider call.
-- The application may send restricted excerpts to an AI provider during extraction. Read-time filtering does not protect those excerpts from provider prompts.
+AI assistance in building the project:
+- Gemini (Google chat assistant) was used to write the first version of
+  the basic application architecture and code.
+- GitHub Copilot (Copilot SDK in VS Code) was used to refine, fix and
+  extend that code, and to produce the QA tests and documentation.
+- Claude (Anthropic chat assistant) was used for planning: drafting the
+  Round 1 plan and the QA instructions, and reviewing test results and
+  documentation.
+- All generated code and text was reviewed by the participant, who is
+  responsible for the submission.
+
+AI models used inside the product (free-tier APIs):
+- Gemini API, model gemini-3.6-flash: primary claim extraction.
+- OpenRouter API, pinned model deepseek/deepseek-v4.1-flash-1017:
+  fallback extraction.
+- Only synthetic demo data was sent during the provider tests. When users run extraction on custom uploads, those source excerpts can be sent to a provider; restricted excerpts are not filtered before provider prompts.
+
+Testing note: real provider requests during testing were limited to
+five; the final clean-clone check used none.
 
 ## Libraries
 

@@ -37,3 +37,13 @@ The handover page reports only the number of approved claims hidden because they
 - `MISSING_EVIDENCE` indicates that a claim has no linked evidence; the app does not perform broader claim-completeness or conflict analysis.
 - SQLite and uploads use local filesystem storage. A hosted instance may not retain edits or uploaded files durably.
 - AI output and the cached demo claims require human review. The cached claim source indicates that a claim came from the packaged sample cache.
+
+## Key technical decisions
+
+- Streamlit + SQLite: one language and no servers to host, so one person can build, test and deploy for free. Trade-off: local storage is not durable on hosted instances.
+- Claim Ledger as relational tables (claims, claim_evidence, reviews, audit_logs): every claim must link to source excerpts, so unsupported claims show as "Missing evidence" instead of looking like facts.
+- One retrieval layer that requires a role for every read: pages cannot fetch data without a role, giving a single place to enforce access.
+- Strict visibility rule: Incoming sees a claim only if it is approved and every linked source is public; no partial leaks.
+- Read-time filtering first because it can be tested deterministically; filtering before provider prompts is the first Round 3 task.
+- Provider chain Gemini -> pinned OpenRouter model -> labelled local heuristic, capped at three extractions per session, so a judge never hits a hard failure and the free quota is protected.
+- Cached demo claims seeded on first start so the review flow works with no API call.

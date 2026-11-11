@@ -7,4 +7,3 @@
 - The three-extraction cap is per Streamlit browser session, not a durable user or service quota.
 - SQLite and uploads are local files. Streamlit Community Cloud persistence was not verified, and local files may be lost when the service replaces an instance.
 - No production deployment, external database, real authentication provider, automated redaction, or version history is implemented.
-- The `git diff --check` run on the user-edited demo fixture reported trailing whitespace on the `1. DECISIONS:` line in `meeting_notes.txt`; it was preserved rather than altered as unrelated fixture formatting.

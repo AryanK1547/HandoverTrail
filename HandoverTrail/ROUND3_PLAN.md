@@ -8,6 +8,7 @@ Compare candidate claims for incompatible values or dates, distinguish conflicts
 
 Use the project handover and detected gaps to generate a short, editable exit-interview question set. Record answers as new evidence with an owner and timestamp, then route resulting claims through the existing review workflow.
 
-## 3. Redaction, history, and acknowledgement
+## 3. Provider-safe, accountable handover
 
-Add configurable redaction before provider prompts, immutable review/audit events, claim and source version history, and an incoming teammate acknowledgement that records which handover version was received.
+(a) Role-scoped extraction: restricted chunks are excluded from provider prompts and common secrets, phone numbers and emails are masked before any provider call, closing the deviation recorded in CHANGES_FROM_PLAN.
+(b) Version history for approved handovers. (c) Incoming acknowledgement that records which handover version was received. Review and denied-action audit events already exist and will be extended to these events.
