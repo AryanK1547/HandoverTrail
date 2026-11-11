@@ -4,6 +4,8 @@ HandoverTrail turns project notes, chat exports, code summaries, and task lists 
 Reviewers can inspect and approve candidate claims before they are shown to incoming teammates.
 The demo includes role and source-sensitivity filtering, a local SQLite database, and optional AI extraction.
 
+  **Live demo:** https://handovertrail-aryankhode.streamlit.app/
+
 ## Workflow
 
 1. Load the packaged demo or upload `.txt` and `.csv` sources.
@@ -53,6 +55,6 @@ The demo's restricted source is synthetic test data, not a real credential or co
 
 ## Streamlit Community Cloud
 
-Deployment was not performed or verified during QA. For a trial deployment, connect the repository, select `HandoverTrail/app.py`, ensure `HandoverTrail/requirements.txt` is installed, and configure the optional secret names above in the Cloud settings.
+Deployed on Streamlit Community Cloud and manually checked by the author on 11 Nov 2026. Hosted storage is not durable, so data resets when the app restarts. For a trial deployment, connect the repository, select `HandoverTrail/app.py`, ensure `HandoverTrail/requirements.txt` is installed, and configure the optional secret names above in the Cloud settings.
 
 The app writes SQLite data and uploaded files to local storage. Streamlit-hosted local files are not a durable persistence service, so edits or uploads may be lost when an instance is replaced. Use durable external storage and real authentication before production use.
