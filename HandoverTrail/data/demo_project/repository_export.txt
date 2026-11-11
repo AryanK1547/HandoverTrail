@@ -1,12 +1,9 @@
-=== GITHUB ISSUE #12: Evidence ID Validation ===
-Status: OPEN
-Assignee: Rahul
+=== COMMIT HISTORY ===
+Commit: 4a2b9c
+Author: Sarah
+Message: Added stripe-node SDK to package.json and initialized client.
 
-Description:
-When extracting claims, Gemini might reference non-existent evidence IDs (hallucinations).
-`validator.py` must check every candidate claim's supporting evidence against the database.
-If an evidence ID is invalid, set trust_status to MISSING_EVIDENCE. Do not auto-approve claims.
-
-=== GITHUB COMMIT: a8f9c12 ===
-Author: Aryan
-Message: Initialized 8 core SQLite tables with foreign key enforcement enabled.
+=== GITHUB ISSUES ===
+Issue #12 (OPEN) - Legacy DB migration locking tables
+Description: The staging environment is freezing during the user table migration. This is a critical blocker for the payment gateway.
+Assignee: Alex

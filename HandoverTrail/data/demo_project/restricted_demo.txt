@@ -1,0 +1,4 @@
+SYNTHETIC RESTRICTED DEMO DATA — NOT REAL CREDENTIALS
+Fake secret: FAKE-KEY-1234
+Fake phone number: +1-202-555-0147
+This file exists only to verify that restricted sources are hidden from incoming teammates.
