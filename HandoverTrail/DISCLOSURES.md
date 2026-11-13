@@ -17,10 +17,10 @@ AI models used inside the product (free-tier APIs):
 - Gemini API, model gemini-3.6-flash: primary claim extraction.
 - OpenRouter API, pinned model deepseek/deepseek-v4.1-flash-1017:
   fallback extraction.
-- Only synthetic demo data was sent during the provider tests. When users run extraction on custom uploads, those source excerpts can be sent to a provider; restricted excerpts are not filtered before provider prompts.
+- The provider gateway sends only public-sensitivity excerpts, after masking common emails, phone numbers, credential-like tokens, and long numeric ID patterns. Restricted excerpts are kept out of provider prompts and handled only by the local heuristic. Regex masking can miss unusual formats; do not use the demo role selector as authentication or send real sensitive data.
 
-Testing note: real provider requests during testing were limited to
-five; the final clean-clone check used none.
+Testing note: real provider requests during Round 2 testing were limited to
+five. Round 3 tests use fake providers and make no real provider requests.
 
 ## Libraries
 

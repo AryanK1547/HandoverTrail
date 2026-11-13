@@ -1,38 +1,16 @@
 import json
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime
 from typing import Callable
 from database import get_connection
+from provider_gateway import (
+    build_provider_payload,
+    generate_gemini_response,
+    generate_openrouter_response,
+)
 
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_MODEL = "gemini-3.6-flash"
 OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
-
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    genai = None
-    types = None
-
-
-def _claims_prompt(evidence_text_block: str) -> str:
-    return f"""
-You are an expert technical auditor analyzing scattered project files.
-Read all evidence excerpts below. Extract a list of unique, deduplicated project claims.
-CRITICAL: If multiple excerpts support the SAME claim or decision, combine them into ONE claim and include ALL of their evidence_ids.
-
-EVIDENCE:
-{evidence_text_block}
-
-Respond ONLY with a valid JSON object containing a "claims" array. Each array item must have these exact keys:
-- "claim_text": string (the consolidated claim)
-- "claim_type": string (one of: Decision, Owner, Risk, Dependency, Blocker, Open question, Next action)
-- "evidence_ids": array of strings (ALL chunk IDs supporting this specific claim)
-"""
-
 
 def _parse_claims(response_text: str, valid_evidence_ids: set) -> dict:
     if not response_text:
@@ -78,48 +56,59 @@ def _parse_claims(response_text: str, valid_evidence_ids: set) -> dict:
     return claims
 
 
-def _generate_openrouter_claims(
-    api_key: str,
-    model: str,
-    prompt: str,
-    valid_evidence_ids: set,
-) -> dict:
-    request_body = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        OPENROUTER_API_URL,
-        data=request_body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/AryanK1547/HandoverTrail",
-            "X-Title": "HandoverTrail",
-        },
-        method="POST",
-    )
+def _label_claims(claims: dict, method: str) -> dict:
+    return {
+        claim_text: {**claim, "claim_source": method}
+        for claim_text, claim in claims.items()
+    }
 
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        response_body = exc.read().decode("utf-8", errors="replace")
-        try:
-            error_payload = json.loads(response_body)
-            detail = error_payload.get("error", {}).get("message", response_body)
-        except (json.JSONDecodeError, AttributeError):
-            detail = response_body
-        raise RuntimeError(f"OpenRouter returned HTTP {exc.code}: {detail}") from exc
 
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("OpenRouter returned no choices.")
-    content = choices[0].get("message", {}).get("content")
-    if not isinstance(content, str):
-        raise ValueError("OpenRouter returned no text content.")
-    return _parse_claims(content, valid_evidence_ids)
+def _merge_claims(target: dict, additions: dict) -> None:
+    for claim_text, claim in additions.items():
+        if claim_text not in target:
+            target[claim_text] = claim
+            continue
+        existing = target[claim_text]
+        existing["evidence_ids"].update(claim["evidence_ids"])
+        methods = set(existing["claim_source"].split(" + "))
+        methods.update(claim["claim_source"].split(" + "))
+        existing["claim_source"] = " + ".join(sorted(methods))
+
+
+def _heuristic_claims(chunks: list, method: str) -> dict:
+    heuristic_groups = {
+        "Decision": [],
+        "Owner": [],
+        "Blocker": [],
+        "Next action": [],
+    }
+    for chunk in chunks:
+        text = chunk["excerpt"].lower()
+        evidence_id = chunk["evidence_id"]
+        raw_text = chunk["excerpt"]
+        if any(word in text for word in ["decid", "decis", "confirm", "will use", "architecture", "database"]):
+            heuristic_groups["Decision"].append((evidence_id, raw_text))
+        elif any(word in text for word in ["owner", "assign", "task-", "responsible", "takes"]):
+            heuristic_groups["Owner"].append((evidence_id, raw_text))
+        elif any(word in text for word in ["block", "risk", "fail", "issue", "depend"]):
+            heuristic_groups["Blocker"].append((evidence_id, raw_text))
+        elif any(word in text for word in ["todo", "next", "pending", "action"]):
+            heuristic_groups["Next action"].append((evidence_id, raw_text))
+
+    claims = {}
+    for claim_type, items in heuristic_groups.items():
+        if not items:
+            continue
+        sample_text = " | ".join(
+            item[1][:50].strip() + "..." for item in items[:3]
+        )
+        claim_text = f"Project {claim_type.lower()} identified: {sample_text}"
+        claims[claim_text] = {
+            "claim_type": claim_type,
+            "evidence_ids": {item[0] for item in items},
+            "claim_source": method,
+        }
+    return claims
 
 
 def extract_claims_from_evidence(
@@ -137,7 +126,7 @@ def extract_claims_from_evidence(
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT e.evidence_id, e.excerpt, e.reference_location, s.file_name
+        SELECT e.evidence_id, e.excerpt, e.reference_location, s.file_name, s.sensitivity
         FROM evidence_chunks e
         JOIN sources s ON e.source_id = s.source_id
         WHERE s.project_id = ?
@@ -149,37 +138,44 @@ def extract_claims_from_evidence(
         report_progress(100, "No evidence found. Parse source files before extracting claims.")
         return {"status": "error", "message": "No evidence chunks found for extraction. Please parse files first."}
 
-    evidence_text_block = "\n".join([
-        f"[{c['evidence_id']}] Source: {c['file_name']} ({c['reference_location']})\nText: {c['excerpt']}\n---"
-        for c in chunks
-    ])
-
+    public_chunks = [chunk for chunk in chunks if chunk["sensitivity"] == "public"]
+    restricted_chunks = [chunk for chunk in chunks if chunk["sensitivity"] != "public"]
     claims_dict = {}
     extraction_method = "Universal Heuristic Fallback"
     provider_note = None
     gemini_error = None
     provider_succeeded = False
-    valid_evidence_ids = {chunk["evidence_id"] for chunk in chunks}
-    prompt = _claims_prompt(evidence_text_block)
-    report_progress(15, f"Loaded {len(chunks)} evidence chunks. Starting provider checks...")
+    public_evidence_ids = {chunk["evidence_id"] for chunk in public_chunks}
+    masked_values = (
+        build_provider_payload(public_chunks)["masked_values"]
+        if public_chunks
+        and any(key and key.strip() for key in (api_key, openrouter_api_key))
+        else 0
+    )
+    report_progress(
+        15,
+        f"Loaded {len(chunks)} evidence chunks; only {len(public_chunks)} public chunks may go to providers.",
+    )
 
     # --- PATH A: LIVE GEMINI EXTRACTION (AI-Driven Deduplication) ---
-    if not api_key or not api_key.strip():
+    if not public_chunks:
+        gemini_error = "No public evidence is available for provider extraction."
+        report_progress(35, gemini_error)
+    elif not api_key or not api_key.strip():
         gemini_error = "GEMINI_API_KEY is not configured in Streamlit secrets."
-        report_progress(35, f"Gemini skipped: {gemini_error}")
-    elif genai is None or types is None:
-        gemini_error = "The google-genai package is not installed."
         report_progress(35, f"Gemini skipped: {gemini_error}")
     else:
         try:
             report_progress(30, f"Sending evidence to Gemini ({GEMINI_MODEL})...")
-            client = genai.Client(api_key=api_key.strip())
-            response = client.models.generate_content(
+            response = generate_gemini_response(
+                api_key=api_key.strip(),
                 model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
+                chunks=public_chunks,
             )
-            claims_dict = _parse_claims(response.text, valid_evidence_ids)
+            claims_dict = _label_claims(
+                _parse_claims(response.text, public_evidence_ids),
+                "Gemini API",
+            )
             extraction_method = "Gemini API"
             provider_succeeded = True
             report_progress(70, "Gemini responded. Validating its claims...")
@@ -195,17 +191,23 @@ def extract_claims_from_evidence(
     # --- PATH B: OPENROUTER FALLBACK ---
     openrouter_error = None
     if not provider_succeeded:
-        if not openrouter_api_key or not openrouter_api_key.strip():
+        if not public_chunks:
+            openrouter_error = "OpenRouter skipped because no public evidence is available."
+            report_progress(62, openrouter_error)
+        elif not openrouter_api_key or not openrouter_api_key.strip():
             openrouter_error = "OPENROUTER_API_KEY is not configured in Streamlit secrets."
             report_progress(62, f"OpenRouter skipped: {openrouter_error}")
         else:
             try:
                 report_progress(58, f"Sending evidence to OpenRouter ({OPENROUTER_MODEL})...")
-                claims_dict = _generate_openrouter_claims(
+                response = generate_openrouter_response(
                     api_key=openrouter_api_key.strip(),
                     model=OPENROUTER_MODEL,
-                    prompt=prompt,
-                    valid_evidence_ids=valid_evidence_ids,
+                    chunks=public_chunks,
+                )
+                claims_dict = _label_claims(
+                    _parse_claims(response.text, public_evidence_ids),
+                    "OpenRouter API",
                 )
                 extraction_method = "OpenRouter API"
                 provider_succeeded = True
@@ -225,49 +227,23 @@ def extract_claims_from_evidence(
             reason for reason in (gemini_error, openrouter_error) if reason
         )
         report_progress(78, "Using local universal keyword fallback...")
-    elif extraction_method == "OpenRouter API":
-        provider_note = f"{gemini_error} OpenRouter handled extraction."
-
-    if not provider_succeeded:
-        # Generic dictionary to group chunks that share similar keywords
-        heuristic_groups = {
-            "Decision": [],
-            "Owner": [],
-            "Blocker": [],
-            "Next action": []
-        }
-
-        for chunk in chunks:
-            text = chunk["excerpt"].lower()
-            evd_id = chunk["evidence_id"]
-            raw_text = chunk["excerpt"]
-
-            # Universal keywords that work on ANY judge's uploaded text
-            if any(word in text for word in ["decid", "confirm", "will use", "architecture", "database"]):
-                heuristic_groups["Decision"].append((evd_id, raw_text))
-            elif any(word in text for word in ["owner", "assign", "task-", "responsible", "takes"]):
-                heuristic_groups["Owner"].append((evd_id, raw_text))
-            elif any(word in text for word in ["block", "risk", "fail", "issue", "depend"]):
-                heuristic_groups["Blocker"].append((evd_id, raw_text))
-            elif any(word in text for word in ["todo", "next", "pending", "action"]):
-                heuristic_groups["Next action"].append((evd_id, raw_text))
-
-        # Convert groups into generalized claims to prove the multi-source concept
-        for c_type, items in heuristic_groups.items():
-            if not items:
-                continue
-            
-            # Combine up to 3 excerpts into a generic claim summary for the judge
-            sample_text = " | ".join([item[1][:50].strip() + "..." for item in items[:3]])
-            generic_claim_text = f"Project {c_type.lower()} identified: {sample_text}"
-            
-            # Gather ALL evidence IDs for this keyword group to trigger VERIFIED status
-            all_evd_ids = set([item[0] for item in items])
-            
-            claims_dict[generic_claim_text] = {
-                "claim_type": c_type,
-                "evidence_ids": all_evd_ids
-            }
+        _merge_claims(
+            claims_dict,
+            _heuristic_claims(chunks, "Universal Keyword Fallback"),
+        )
+    else:
+        if extraction_method == "OpenRouter API":
+            provider_note = f"{gemini_error} OpenRouter handled extraction."
+        if restricted_chunks:
+            _merge_claims(
+                claims_dict,
+                _heuristic_claims(
+                    restricted_chunks,
+                    "Local heuristic (restricted sources)",
+                ),
+            )
+            extraction_method += " + local restricted-source heuristic"
+            report_progress(78, "Using local heuristic for restricted-source evidence...")
 
     report_progress(88, f"Saving {len(claims_dict)} extracted claims...")
 
@@ -284,9 +260,21 @@ def extract_claims_from_evidence(
             
         claim_id = f"CLM-{uuid.uuid4().hex[:8].upper()}"
         cursor.execute("""
-            INSERT INTO claims (claim_id, project_id, claim_text, claim_type, trust_status, review_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (claim_id, project_id, text, data["claim_type"], "SINGLE_SOURCE", "PENDING", now, now))
+            INSERT INTO claims
+                (claim_id, project_id, claim_text, claim_type, trust_status, claim_source,
+                 review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            claim_id,
+            project_id,
+            text,
+            data["claim_type"],
+            "SINGLE_SOURCE",
+            data["claim_source"],
+            "PENDING",
+            now,
+            now,
+        ))
 
         for evd_id in data["evidence_ids"]:
             cursor.execute("""
@@ -303,7 +291,8 @@ def extract_claims_from_evidence(
         "status": "success",
         "claims_created": created_count,
         "method": extraction_method,
-        "fallback_reason": provider_note
+        "fallback_reason": provider_note,
+        "masked_values": masked_values,
     }
 
 
