@@ -23,7 +23,7 @@ bootstrap()
 
 PROJECT_ID = "PROJ-DEMO-001"
 user_role, _counts = page_shell(
-    5,
+    6,
     "Project handover",
     "Continue the work using human-approved claims and their source evidence.",
 )

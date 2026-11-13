@@ -11,16 +11,35 @@ def _mask_row_values(row, keys: tuple[str, ...]) -> dict:
     return masked_row
 
 
+def _source_is_visible(conn, role: str, source) -> bool:
+    if not can_view_sensitivity(role, source["sensitivity"]):
+        return False
+    if normalize_role(role) != "Incoming" or source["source_type"] != "interview":
+        return True
+    statuses = conn.execute(
+        """
+        SELECT c.review_status
+        FROM claim_evidence ce
+        JOIN claims c ON c.claim_id = ce.claim_id
+        JOIN evidence_chunks e ON e.evidence_id = ce.evidence_id
+        WHERE e.source_id = ?
+        """,
+        (source["source_id"],),
+    ).fetchall()
+    return bool(statuses) and all(row["review_status"] == "APPROVED" for row in statuses)
+
+
 def _claim_has_only_visible_evidence(conn, role: str, claim_id: str) -> bool:
     linked_sources = conn.execute("""
-        SELECT s.sensitivity
+        SELECT s.source_id, s.sensitivity, s.source_type
         FROM claim_evidence ce
         LEFT JOIN evidence_chunks e ON ce.evidence_id = e.evidence_id
         LEFT JOIN sources s ON e.source_id = s.source_id
         WHERE ce.claim_id = ?
     """, (claim_id,)).fetchall()
     return bool(linked_sources) and all(
-        can_view_sensitivity(role, source["sensitivity"]) for source in linked_sources
+        source["source_id"] is not None and _source_is_visible(conn, role, source)
+        for source in linked_sources
     )
 
 
@@ -28,12 +47,12 @@ def get_visible_sources(role: str, project_id: str) -> list:
     conn = get_connection()
     try:
         rows = conn.execute("""
-            SELECT source_id, project_id, file_name, file_type, sensitivity, uploaded_at
+            SELECT source_id, project_id, file_name, file_type, sensitivity, source_type, uploaded_at
             FROM sources
             WHERE project_id = ?
             ORDER BY file_name
         """, (project_id,)).fetchall()
-        visible = [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        visible = [row for row in rows if _source_is_visible(conn, role, row)]
         if normalize_role(role) == "Incoming":
             return [_mask_row_values(row, ("file_name",)) for row in visible]
         return visible
@@ -46,13 +65,13 @@ def get_visible_evidence_chunks(role: str, project_id: str) -> list:
     try:
         rows = conn.execute("""
             SELECT e.evidence_id, e.source_id, e.chunk_index, e.reference_location,
-                   e.excerpt, s.file_name, s.sensitivity
+                   e.excerpt, s.file_name, s.sensitivity, s.source_type
             FROM evidence_chunks e
             JOIN sources s ON e.source_id = s.source_id
             WHERE s.project_id = ?
             ORDER BY s.file_name, e.chunk_index
         """, (project_id,)).fetchall()
-        visible = [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        visible = [row for row in rows if _source_is_visible(conn, role, row)]
         if normalize_role(role) == "Incoming":
             return [
                 _mask_row_values(row, ("excerpt", "file_name", "reference_location"))
@@ -103,14 +122,14 @@ def get_claim_evidence(role: str, claim_id: str) -> list:
             return []
         rows = conn.execute("""
             SELECT e.evidence_id, e.source_id, e.chunk_index, e.reference_location,
-                   e.excerpt, s.file_name, s.sensitivity
+                   e.excerpt, s.file_name, s.sensitivity, s.source_type
             FROM claim_evidence ce
             JOIN evidence_chunks e ON ce.evidence_id = e.evidence_id
             JOIN sources s ON e.source_id = s.source_id
             WHERE ce.claim_id = ?
             ORDER BY s.file_name, e.chunk_index
         """, (claim_id,)).fetchall()
-        visible = [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        visible = [row for row in rows if _source_is_visible(conn, role, row)]
         if normalize_role(role) == "Incoming":
             return [
                 _mask_row_values(row, ("excerpt", "file_name", "reference_location"))

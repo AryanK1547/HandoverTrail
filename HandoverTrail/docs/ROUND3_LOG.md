@@ -36,3 +36,13 @@
 - The validator now reports `VERIFIED` only when normalized claim slots agree. Two source links by themselves remain `SINGLE_SOURCE`.
 - Plain-language concepts: slots make claims comparable; normalization makes formats such as `15 Nov 2026` and `2026-11-15` equivalent; similar text is only a possible match; SQLite's stable IDs prevent duplicate gap rows on repeated scans; audit rows preserve review decisions.
 - Verification: full suite **30 passed**; compileall, `git diff --check`, and fresh-database Streamlit AppTest passed. Tests use synthetic fixtures and make no provider calls.
+
+## R3-3 gap-to-question exit interview
+
+- Work branch: `r3/exit-interview`, based on R3-2; not pushed.
+- Added the Departing role by assigning it to the demo leaver through the additive role-assignment table. Added an additive `assigned_user_id` question column so only the assigned leaver can retrieve sent questions.
+- Reviewers can generate a question from each open gap using local templates, edit/add/delete drafts, and send them. Question lifecycle actions are audited.
+- Departing answers are saved with author, timestamp, and chosen sensitivity as an `interview` source, parsed into evidence chunks, and extracted from that source ID only. Existing claims are preserved. Extracted claims are pending; a verbatim pending candidate is created if the local heuristic finds no structured keyword.
+- Incoming cannot read a public interview source before every claim linked to it is approved. Approval changes the corresponding answered gap to `resolved`.
+- Plain-language concepts: additive migrations preserve the old question table; a source ID filter limits extraction to the interview source; exact user assignment prevents another Departing user from reading the question; approval gating keeps public interview data out of Incoming's view until review.
+- Verification: full suite **32 passed**; compileall, `git diff --check`, and AppTest for Reviewer and Departing views passed. Provider functions are fake/fail-fast in tests; no real calls.

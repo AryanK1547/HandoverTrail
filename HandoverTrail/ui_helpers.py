@@ -1,7 +1,7 @@
 import streamlit as st
 
 
-_ROLE_OPTIONS = ("Admin", "Reviewer", "Incoming")
+_ROLE_OPTIONS = ("Admin", "Reviewer", "Incoming", "Departing")
 
 
 def render_role_selector():

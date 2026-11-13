@@ -7,6 +7,7 @@ _ROLE_NAMES = {
     "admin": "Admin",
     "reviewer": "Reviewer",
     "incoming": "Incoming",
+    "departing": "Departing",
 }
 
 
@@ -32,6 +33,12 @@ def require_role(role: str, action: str) -> None:
         raise PermissionError(f"The selected role is not permitted to {action}.")
 
 
+def require_departing_role(role: str, action: str) -> str:
+    if normalize_role(role) != "Departing":
+        raise PermissionError(f"The selected role is not permitted to {action}.")
+    return "USR-DEMO-DEPARTING"
+
+
 def perform_claim_review(role: str, claim_id: str, action: str) -> None:
     """Authorize and persist a review plus its audit record."""
     action = action.upper()
@@ -43,7 +50,15 @@ def perform_claim_review(role: str, claim_id: str, action: str) -> None:
         cursor = conn.cursor()
         normalized_role = normalize_role(role)
         actor = None
-        if normalized_role:
+        if normalized_role == "Departing":
+            actor = cursor.execute(
+                """
+                SELECT u.user_id FROM users u
+                JOIN user_role_assignments ura ON ura.user_id = u.user_id
+                WHERE ura.role = 'Departing' AND u.user_id = 'USR-DEMO-DEPARTING'
+                """
+            ).fetchone()
+        elif normalized_role:
             actor = cursor.execute(
                 "SELECT user_id FROM users WHERE lower(role) = lower(?)",
                 (normalized_role,),
@@ -104,6 +119,21 @@ def perform_claim_review(role: str, claim_id: str, action: str) -> None:
             claim_id,
             now,
         ))
+        if action == "APPROVED":
+            cursor.execute(
+                """
+                UPDATE gaps SET status = 'resolved'
+                WHERE id IN (
+                    SELECT q.gap_id
+                    FROM answers a
+                    JOIN questions q ON q.id = a.question_id
+                    JOIN claim_evidence ce ON ce.claim_id = ?
+                    JOIN evidence_chunks e ON e.evidence_id = ce.evidence_id
+                    WHERE e.source_id = a.source_id
+                )
+                """,
+                (claim_id,),
+            )
         conn.commit()
     finally:
         conn.close()

@@ -6,7 +6,8 @@ import subprocess
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from database import PROJECT_ROOT
+from database import PROJECT_ROOT, get_connection
+from permissions import normalize_role
 from retrieval import (
     count_hidden_claims,
     get_visible_claims,
@@ -67,6 +68,7 @@ _ROLE_DESCRIPTIONS = {
     "Admin": "Can inspect all sources and manage demo reviews.",
     "Reviewer": "Can inspect evidence and approve or reject claims.",
     "Incoming": "Can read approved claims supported only by public sources.",
+    "Departing": "Can answer only interview questions assigned to the demo leaver.",
 }
 
 _WORKFLOW = (
@@ -74,6 +76,7 @@ _WORKFLOW = (
     ("Reconstruct", "pages/2_Review_Claims.py"),
     ("Verify", "pages/2_Review_Claims.py"),
     ("Review", "pages/2_Review_Claims.py"),
+    ("Interview", "pages/4_Exit_Interview.py"),
     ("Handover", "pages/3_Handover_View.py"),
 )
 
@@ -174,6 +177,37 @@ def _dashboard_counts(role: str) -> dict[str, int]:
     sources = get_visible_sources(role, PROJECT_ID)
     evidence = get_visible_evidence_chunks(role, PROJECT_ID)
     claims = get_visible_claims(role, PROJECT_ID)
+    if normalize_role(role) in {"Admin", "Reviewer"}:
+        conn = get_connection()
+        try:
+            open_gaps = conn.execute(
+                "SELECT COUNT(*) FROM gaps WHERE project_id = ? AND status = 'open'",
+                (PROJECT_ID,),
+            ).fetchone()[0]
+            interview_questions = conn.execute(
+                """
+                SELECT COUNT(*) FROM questions q
+                JOIN gaps g ON g.id = q.gap_id
+                WHERE g.project_id = ? AND q.status IN ('DRAFT', 'SENT')
+                """,
+                (PROJECT_ID,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    elif normalize_role(role) == "Departing":
+        conn = get_connection()
+        try:
+            open_gaps = 0
+            interview_questions = conn.execute(
+                """
+                SELECT COUNT(*) FROM questions
+                WHERE assigned_user_id = 'USR-DEMO-DEPARTING' AND status = 'SENT'
+                """
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    else:
+        open_gaps = interview_questions = 0
     return {
         "sources": len(sources),
         "public_sources": sum(row["sensitivity"] == "public" for row in sources),
@@ -183,6 +217,8 @@ def _dashboard_counts(role: str) -> dict[str, int]:
         "pending": sum(row["review_status"] == "PENDING" for row in claims),
         "approved": sum(row["review_status"] == "APPROVED" for row in claims),
         "hidden": count_hidden_claims(role, PROJECT_ID),
+        "open_gaps": open_gaps,
+        "interview_questions": interview_questions,
     }
 
 
@@ -220,7 +256,8 @@ def _rail_labels(counts: dict[str, int]) -> tuple[str, ...]:
         f"{counts['sources']} sources",
         f"{counts['evidence']} excerpts",
         f"{counts['claims']} claims",
-        f"{counts['pending']} pending",
+        f"{counts['open_gaps']} open gaps",
+        f"{counts['interview_questions']} interview questions",
         f"{counts['approved']} approved",
     )
 
@@ -228,7 +265,7 @@ def _rail_labels(counts: dict[str, int]) -> tuple[str, ...]:
 def workflow_rail(current_step: int, counts: dict[str, int]) -> None:
     labels = _rail_labels(counts)
     with st.container(key="workflow-rail-desktop"):
-        columns = st.columns(5)
+        columns = st.columns(len(_WORKFLOW))
         for index, (column, (name, page), count) in enumerate(
             zip(columns, _WORKFLOW, labels),
             start=1,
@@ -239,11 +276,13 @@ def workflow_rail(current_step: int, counts: dict[str, int]) -> None:
                     st.page_link(page, label=name)
                     st.caption(count)
     with st.container(key="workflow-rail-mobile"):
-        st.caption(f"Step {current_step} of 5 · {_WORKFLOW[current_step - 1][0]}")
+        st.caption(f"Step {current_step} of {len(_WORKFLOW)} · {_WORKFLOW[current_step - 1][0]}")
 
 
 def next_step_banner(counts: dict[str, int], role: str) -> None:
-    if counts["sources"] == 0:
+    if normalize_role(role) == "Departing":
+        message = "Answer your assigned exit-interview questions; other project sources and claims stay hidden."
+    elif counts["sources"] == 0:
         message = "No sources yet. Load the synthetic demo or add project files in Connect."
     elif counts["evidence"] == 0:
         message = f"{counts['sources']} sources are available. Parse them into evidence excerpts in Connect."

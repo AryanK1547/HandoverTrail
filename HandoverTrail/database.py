@@ -132,7 +132,7 @@ def bootstrap(db_path: str | Path | None = None) -> None:
     );
     """)
 
-    # Round 3 schema scaffolding. These tables remain empty until their features are implemented.
+    # Round 3 tables use additive creation so later feature migrations preserve existing data.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS claim_versions (
         id TEXT PRIMARY KEY,
@@ -198,12 +198,21 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         text TEXT NOT NULL,
         status TEXT NOT NULL,
         assigned_role TEXT NOT NULL,
+        assigned_user_id TEXT,
         created_by TEXT NOT NULL,
         created_at TEXT NOT NULL,
         FOREIGN KEY (gap_id) REFERENCES gaps(id) ON DELETE CASCADE,
-        FOREIGN KEY (created_by) REFERENCES users(user_id)
+        FOREIGN KEY (created_by) REFERENCES users(user_id),
+        FOREIGN KEY (assigned_user_id) REFERENCES users(user_id)
     );
     """)
+    question_columns = {
+        row["name"] for row in cursor.execute("PRAGMA table_info(questions)").fetchall()
+    }
+    if "assigned_user_id" not in question_columns:
+        cursor.execute(
+            "ALTER TABLE questions ADD COLUMN assigned_user_id TEXT REFERENCES users(user_id)"
+        )
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS answers (
         id TEXT PRIMARY KEY,
@@ -278,7 +287,14 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         ("USR-DEMO-ADMIN", "Demo Admin", "admin@demo.local", "Admin", now),
         ("USR-DEMO-REVIEWER", "Demo Reviewer", "reviewer@demo.local", "Reviewer", now),
         ("USR-DEMO-INCOMING", "Demo Incoming", "incoming@demo.local", "Incoming", now),
+        ("USR-DEMO-DEPARTING", "Demo Departing", "departing@demo.local", "Incoming", now),
     ])
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO user_role_assignments (user_id, role)
+        VALUES ('USR-DEMO-DEPARTING', 'Departing')
+        """
+    )
     cursor.execute("""
         INSERT OR IGNORE INTO projects (project_id, name, description, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)

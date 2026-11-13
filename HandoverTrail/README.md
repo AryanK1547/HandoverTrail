@@ -11,8 +11,9 @@ The demo includes role and source-sensitivity filtering, a local SQLite database
 1. Load the packaged demo or upload `.txt` and `.csv` sources.
 2. Parse sources into excerpts linked to their filenames and chunk locations.
 3. Extract candidate claims with Gemini, then the pinned OpenRouter model, or use the labeled local heuristic fallback.
-4. Review and approve or reject claims as Admin or Reviewer.
-5. Inspect conflicts and evidence gaps, then view approved, authorized claims and citations as Incoming.
+4. Review claims, inspect conflicts and evidence gaps, and approve or reject them as Admin or Reviewer.
+5. Create questions from open gaps; the assigned Departing role answers them as interview evidence.
+6. View approved, authorized claims and citations as Incoming.
 
 An empty database is seeded with demo sources and cached demo claims, so the review flow can be explored without an API call.
 
@@ -48,16 +49,18 @@ Only public-sensitivity excerpts can be sent to Gemini or OpenRouter. Before a p
 
 - **Admin** and **Reviewer** can read public and restricted demo sources and can review claims.
 - **Incoming** can read approved claims only when every linked source is public.
+- **Departing** can read and answer only questions assigned to the demo leaver. Public interview evidence stays hidden from Incoming until all claims linked to that answer are approved.
 - Roles are simulated by a Streamlit selector; there is no login or authenticated identity.
 - **Corroborated** means matching subject/attribute values were found across separate sources after name/date normalization. A different value is shown as a conflict or possible conflict for review.
 - **Evidence gaps** include tasks without owners, decisions without dates or rationale, risks without mitigation, and single-source claims. The current detector uses explicit text rules and may miss differently worded statements.
 - Conflict comparisons are deterministic and run locally; provider calls are not used for conflict or gap detection.
+- Exit-interview questions use local templates. Answers are saved with the demo author and timestamp as an `interview` source, chunked, and extracted only from that source into pending claims. The current interview extractor uses the local heuristic and does not make provider calls.
 
 The demo's restricted source is synthetic test data, not a real credential or contact record.
 
 ## Design and usability
 
-The shared interface uses one five-step workflow rail, a role badge, and next-step guidance computed from visible database state. Review and handover cards keep trust, human review, source sensitivity, and extraction origin as separate labels. Text uses a dark-theme palette with contrast-tested tokens; focus outlines are visible, and the 375 px workflow rail collapses to a compact current-step label. The role selector remains a demo control, not authentication.
+The shared interface uses one six-step workflow rail, a role badge, and next-step guidance computed from visible database state. Review and handover cards keep trust, human review, source sensitivity, and extraction origin as separate labels. Text uses a dark-theme palette with contrast-tested tokens; focus outlines are visible, and the 375 px workflow rail collapses to a compact current-step label. The role selector remains a demo control, not authentication.
 
 ## Streamlit Community Cloud
 
