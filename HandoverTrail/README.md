@@ -13,7 +13,7 @@ The demo includes role and source-sensitivity filtering, a local SQLite database
 3. Extract candidate claims with Gemini, then the pinned OpenRouter model, or use the labeled local heuristic fallback.
 4. Review, edit, and approve claims; an edit returns the claim to pending review and is retained in History.
 5. Inspect conflicts and evidence gaps, then create questions from open gaps; the assigned Departing role answers them as interview evidence.
-6. View approved, authorized claims and citations as Incoming.
+6. Release a handover snapshot as Admin or Reviewer; Incoming sees that latest release and can acknowledge its version.
 
 An empty database is seeded with demo sources and cached demo claims, so the review flow can be explored without an API call.
 
@@ -50,6 +50,7 @@ Only public-sensitivity excerpts can be sent to Gemini or OpenRouter. Before a p
 - **Admin** and **Reviewer** can read public and restricted demo sources and can review claims.
 - **Incoming** can read approved claims only when every linked source is public.
 - **Departing** can read and answer only questions assigned to the demo leaver. Public interview evidence stays hidden from Incoming until all claims linked to that answer are approved.
+- **Handover release:** Incoming sees a fixed release snapshot, not live claims. A later edit requires approval and a new release; acknowledgement is recorded against the exact released version.
 - Roles are simulated by a Streamlit selector; there is no login or authenticated identity.
 - **Corroborated** means matching subject/attribute values were found across separate sources after name/date normalization. A different value is shown as a conflict or possible conflict for review.
 - **Evidence gaps** include tasks without owners, decisions without dates or rationale, risks without mitigation, and single-source claims. The current detector uses explicit text rules and may miss differently worded statements.

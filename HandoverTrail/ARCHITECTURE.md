@@ -9,7 +9,9 @@
 5. The local conflict detector extracts claim slots, normalizes names and dates, compares claims from separate sources, and records task/decision/risk/single-source gaps. The validator marks claims corroborated only when comparable slot values agree; source count alone is insufficient.
 6. Reviewers turn open gaps into draft exit-interview questions. The assigned Departing identity submits an answer that is stored as a timestamped `interview` source, chunked, and extracted from that source only into pending claims.
 7. Claim edits append the previous text, editor, edit reason, and time to `claim_versions`, set the claim to edited-pending-review, and write review/audit rows. Approving a linked interview claim resolves its gap.
-8. Retrieval filters sources, chunks, claims, and claim evidence before the pages render them. The Incoming role sees interview sources only when all claims linked to that answer are approved; other claims are visible only when approved and every linked source is public.
+8. Admin/Reviewer release a versioned JSON snapshot containing only approved claims with evidence exclusively from public sources. SQLite triggers prevent changing or deleting a released snapshot.
+9. Incoming reads only the latest release and acknowledges that release's version. Acknowledgements are unique per user/version and are separate from immutable snapshot data.
+10. Retrieval filters sources, chunks, claims, and claim evidence before the pages render them. The Incoming role sees interview sources only when all claims linked to that answer are approved; other claims are visible only when approved and every linked source is public.
 
 ## SQLite schema
 
@@ -25,7 +27,8 @@
 - `questions` and `answers`: assigned draft/sent questions and timestamped answer records linked to their interview source.
 - `user_role_assignments`: additive role assignments, including the demo Departing identity without rebuilding the legacy `users.role` constraint.
 - `claim_versions`: append-only snapshots of text replaced during claim edits, with editor, reason, and timestamp.
-- Round 3 scaffolding not yet active: `handover_versions` and `handover_acks`.
+- `handover_versions`: immutable point-in-time snapshots of approved claims and public citations.
+- `handover_acks`: Incoming receipt records attached to one release version.
 
 `HANDOVERTRAIL_DB` overrides the default `<project directory>/handovertrail.db` path. `bootstrap()` uses `CREATE TABLE IF NOT EXISTS` and additive column migrations, so it can initialize a fresh database or upgrade the known older schema without replacing the database file.
 
@@ -45,6 +48,7 @@ The handover page reports only the number of approved claims hidden because they
 - Gaps are rule-based signals, not proof that information is absent from the whole project. They cover tasks without owners, decisions without dates or rationale, risks without mitigation, and single-source claims.
 - “Corroborated” means a comparable slot agrees across separate source records; it does not establish source independence or factual correctness.
 - `MISSING_EVIDENCE` indicates that a claim has no linked evidence; other gap rules identify specific missing context.
+- Releases are immutable SQLite snapshots and include only approved claims that have evidence and whose linked sources are all public. Incoming's acknowledgement is bound to the latest version; a newer release requires a new acknowledgement.
 - SQLite and uploads use local filesystem storage. A hosted instance may not retain edits or uploaded files durably.
 - AI output and the cached demo claims require human review. The cached claim source indicates that a claim came from the packaged sample cache.
 

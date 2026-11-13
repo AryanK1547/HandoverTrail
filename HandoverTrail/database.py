@@ -250,6 +250,20 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
     """)
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS handover_versions_no_update
+    BEFORE UPDATE ON handover_versions
+    BEGIN
+        SELECT RAISE(ABORT, 'Released handover snapshots are immutable');
+    END;
+    """)
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS handover_versions_no_delete
+    BEFORE DELETE ON handover_versions
+    BEGIN
+        SELECT RAISE(ABORT, 'Released handover snapshots are immutable');
+    END;
+    """)
     # The legacy users.role CHECK is intentionally unchanged; this extension supports new roles additively.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS user_role_assignments (

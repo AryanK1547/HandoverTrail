@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import database
 import claim_history
 import conflict_detection
 import extractor
+import handover_release
 import interviews
 import masking
 import permissions
@@ -1249,3 +1251,120 @@ def test_claim_edits_require_reviewer_and_a_reason(isolated_db: Path) -> None:
             " ",
         )
     assert claim_history.get_claim_history("Reviewer", "CLM-EDIT-DENIED")["versions"] == []
+
+
+def test_handover_release_snapshot_is_immutable_and_public_only(isolated_db: Path) -> None:
+    _create_project()
+    public = _create_source(
+        "SRC-RELEASE-PUBLIC",
+        "release-public.txt",
+        "public",
+        "Public release evidence with alice@example.test",
+    )
+    restricted = _create_source(
+        "SRC-RELEASE-RESTRICTED",
+        "release-restricted.txt",
+        "restricted",
+        "Restricted release evidence",
+    )
+    _create_claim(
+        "CLM-RELEASE-PUBLIC",
+        [public],
+        review_status="APPROVED",
+        claim_text="Public claim for release",
+        claim_type="Decision",
+    )
+    _create_claim(
+        "CLM-RELEASE-MIXED",
+        [public, restricted],
+        review_status="APPROVED",
+        claim_text="Claim with restricted citation",
+    )
+    _create_claim(
+        "CLM-RELEASE-PENDING",
+        [public],
+        claim_text="Pending claim must stay out",
+    )
+
+    released = handover_release.release_handover("Reviewer", PROJECT_ID)
+    assert released["version"] == 1
+    assert [claim["claim_id"] for claim in released["snapshot"]["claims"]] == [
+        "CLM-RELEASE-PUBLIC"
+    ]
+    released_claim = released["snapshot"]["claims"][0]
+    assert released_claim["review_status"] == "APPROVED"
+    assert released_claim["evidence"][0]["sensitivity"] == "public"
+    assert "alice@example.test" not in repr(released["snapshot"])
+    snapshot_before = json.dumps(released["snapshot"], sort_keys=True)
+
+    conn = database.get_connection()
+    conn.execute(
+        "UPDATE claims SET claim_text = 'Changed after release' WHERE claim_id = ?",
+        ("CLM-RELEASE-PUBLIC",),
+    )
+    conn.execute(
+        "UPDATE evidence_chunks SET excerpt = 'Changed source after release' WHERE evidence_id = ?",
+        (public,),
+    )
+    conn.commit()
+    stored_snapshot = conn.execute(
+        "SELECT snapshot_json FROM handover_versions WHERE id = ?",
+        (released["id"],),
+    ).fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        conn.execute(
+            "UPDATE handover_versions SET snapshot_json = '{}' WHERE id = ?",
+            (released["id"],),
+        )
+    conn.rollback()
+    conn.close()
+    assert stored_snapshot == snapshot_before
+    latest = handover_release.get_latest_release("Incoming", PROJECT_ID)
+    assert json.dumps(latest["snapshot"], sort_keys=True) == snapshot_before
+
+
+def test_handover_release_versions_acknowledgement_and_role_checks(isolated_db: Path) -> None:
+    _create_project()
+    evidence_id = _create_source(
+        "SRC-ACK",
+        "ack.txt",
+        "public",
+        "Public handover evidence.",
+    )
+    _create_claim(
+        "CLM-ACK",
+        [evidence_id],
+        review_status="APPROVED",
+        claim_text="A releasable approved claim.",
+    )
+
+    with pytest.raises(PermissionError):
+        handover_release.release_handover("Incoming", PROJECT_ID)
+    with pytest.raises(PermissionError):
+        handover_release.acknowledge_latest_release("Reviewer", PROJECT_ID)
+    with pytest.raises(ValueError, match="no released handover"):
+        handover_release.acknowledge_latest_release("Incoming", PROJECT_ID)
+
+    first_release = handover_release.release_handover("Admin", PROJECT_ID)
+    acknowledgement = handover_release.acknowledge_latest_release("Incoming", PROJECT_ID)
+    assert acknowledgement["version"] == 1
+    assert acknowledgement["user_id"] == "USR-DEMO-INCOMING"
+    with pytest.raises(ValueError, match="already acknowledged"):
+        handover_release.acknowledge_latest_release("Incoming", PROJECT_ID)
+
+    permissions.perform_claim_review("Reviewer", "CLM-ACK", "REJECTED")
+    permissions.perform_claim_review("Reviewer", "CLM-ACK", "APPROVED")
+    second_release = handover_release.release_handover("Reviewer", PROJECT_ID)
+    assert second_release["version"] == 2
+    latest = handover_release.get_latest_release("Incoming", PROJECT_ID)
+    assert latest["id"] == second_release["id"]
+    assert latest["acknowledgements"] == []
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        conn = database.get_connection()
+        try:
+            conn.execute(
+                "DELETE FROM handover_versions WHERE id = ?",
+                (first_release["id"],),
+            )
+        finally:
+            conn.close()

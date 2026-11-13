@@ -55,3 +55,11 @@
 - Editing an approved claim removes it from Incoming until it is approved again. Edit review/audit rows are written, and conflict/gap validation is recalculated from the new text.
 - Plain-language concepts: the version table is append-only, meaning code adds older text but never overwrites it; version numbers show the sequence; the reason records why the text changed; the review status prevents an edit from silently remaining trusted.
 - Verification: full suite **34 passed**; compileall, `git diff --check`, and Review page AppTest passed. Tests use synthetic data only and no provider calls.
+
+## R3-5 immutable handover release and acknowledgement
+
+- Work branch: `r3/handover-release`, based on R3-4; not pushed.
+- Admin/Reviewer can release a numbered, audited snapshot containing approved claims supported only by public evidence. Claim and citation text is masked before saving. SQLite rules reject edits or deletion of a released snapshot.
+- Incoming sees only the latest release, with its saved citations, and can acknowledge that exact version once. A later release gets a new number and requires its own acknowledgement.
+- Plain-language concepts: a snapshot is a frozen copy of what was shared at release time; a database trigger is an automatic SQLite guard that refuses to rewrite or remove that copy; the acknowledgement is a separate receipt linked to a specific version.
+- Verification: full suite **36 passed**; compileall, `git diff --check`, and isolated-database AppTest passed for Reviewer release, Incoming display, acknowledgement, and persisted acknowledgement status. Tests use synthetic data only and make no provider calls.

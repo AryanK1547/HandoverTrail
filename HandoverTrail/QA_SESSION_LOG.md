@@ -160,3 +160,14 @@
 - Plain-language concept: version history is append-only, so old text is never overwritten; each row records the prior text being replaced and the reason for the change. The edit is also passed through conflict/gap validation so the displayed trust state follows the current text.
 - Verification: focused tests passed (2 passed, 30 deselected); full suite passed 34 tests; compileall and `git diff --check` passed. Fresh-database AppTest rendered 13 edit forms, History expanders, and the conflict controls without exceptions.
 - No real Gemini or OpenRouter calls were made. Streamlit Cloud behavior remains unverified.
+
+## R3-5 immutable handover release and acknowledgement
+
+- Date/time: 2026-11-13 15:15 IST onward.
+- Branch: `r3/handover-release`, based on committed R3-4 branch `r3/claim-history`; no push.
+- Added release creation for Admin/Reviewer. Each version snapshots approved claims that have evidence and whose linked sources are all public; common sensitive patterns are masked in claim and citation text. Releases are audited and assigned sequential per-project version numbers.
+- Added SQLite triggers that reject updates and deletes to released snapshots. Incoming reads only the latest snapshot and can acknowledge it once; acknowledgement is recorded separately from the immutable snapshot and a newer release requires a new acknowledgement.
+- The Handover page now exposes release controls and acknowledgement status. Incoming sees the versioned snapshot and citation details rather than live claims.
+- Plain-language concepts: a snapshot is a saved copy of the handover at release time, so later claim edits do not rewrite what was previously shared; database triggers are automatic SQLite rules that reject attempts to change or delete a released copy; acknowledgement is stored separately and points to one exact version.
+- Verification: full suite **36 passed**; `compileall` and `git diff --check` passed. Isolated-database AppTest released version 1 as Reviewer, then confirmed Incoming could view and acknowledge version 1 and see the saved acknowledgement. The first UI run exposed that the snapshot lacked the approved review label expected by the renderer; the snapshot now retains `review_status`, with a regression assertion in pytest.
+- Tests use synthetic data and make no Gemini or OpenRouter calls. Streamlit Cloud behavior remains unverified.
