@@ -49,9 +49,13 @@ Only public-sensitivity excerpts can be sent to Gemini or OpenRouter. Before a p
 - **Admin** and **Reviewer** can read public and restricted demo sources and can review claims.
 - **Incoming** can read approved claims only when every linked source is public.
 - Roles are simulated by a Streamlit selector; there is no login or authenticated identity.
-- **Corroborated (2+ source files)** means a claim links to evidence from at least two distinct files. It does not check whether those files agree; conflict detection is not implemented.
+- **Multiple sources — agreement not checked** means a claim links to evidence from at least two distinct files. Conflict detection is not implemented.
 
 The demo's restricted source is synthetic test data, not a real credential or contact record.
+
+## Design and usability
+
+The shared interface uses one five-step workflow rail, a role badge, and next-step guidance computed from visible database state. Review and handover cards keep trust, human review, source sensitivity, and extraction origin as separate labels. Text uses a dark-theme palette with contrast-tested tokens; focus outlines are visible, and the 375 px workflow rail collapses to a compact current-step label. The role selector remains a demo control, not authentication.
 
 ## Streamlit Community Cloud
 

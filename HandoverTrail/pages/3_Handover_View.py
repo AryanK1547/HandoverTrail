@@ -1,70 +1,80 @@
-import streamlit as st
 import os
 import sys
 
-# Ensure parent directory is in path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import streamlit as st
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from database import bootstrap
 from retrieval import count_hidden_claims, get_claim_evidence, get_visible_claims
-from ui_helpers import render_role_selector
+from ui import (
+    configure_page,
+    empty_state,
+    footer,
+    origin_badge,
+    page_shell,
+    review_badge,
+    sensitivity_badge,
+    trust_badge,
+)
 
+configure_page("Handover · HandoverTrail")
 bootstrap()
 
-st.set_page_config(page_title="Handover View - HandoverTrail", page_icon="🤝")
-
-render_role_selector()
-
-st.title("🤝 Official Project Handover")
-st.markdown("Welcome to the team! Below is the human-approved project knowledge you need to get up to speed.")
-st.caption(
-    "Means the same claim is supported by 2+ different files; it does not yet check that they agree. "
-    "Conflict detection is planned."
-)
-st.divider()
-
 PROJECT_ID = "PROJ-DEMO-001"
-user_role = st.session_state["user_role"]
+user_role, _counts = page_shell(
+    5,
+    "Project handover",
+    "Continue the work using human-approved claims and their source evidence.",
+)
 
 approved_claims = [
-    claim for claim in get_visible_claims(user_role, PROJECT_ID)
+    claim
+    for claim in get_visible_claims(user_role, PROJECT_ID)
     if claim["review_status"] == "APPROVED"
 ]
 hidden_count = count_hidden_claims(user_role, PROJECT_ID)
-if hidden_count:
-    st.info(f"{hidden_count} items hidden: sources you are not authorised to view")
+if user_role == "Incoming":
+    if hidden_count:
+        st.info(
+            f"{hidden_count} approved item(s) are hidden because at least one linked source "
+            "is restricted or not readable for this role."
+        )
+    else:
+        st.success("No approved items are hidden for this role.")
 
-if approved_claims:
-    # Group claims by type for a cleaner reading experience
-    claims_by_type = {}
-    for c in approved_claims:
-        ctype = c["claim_type"]
-        if ctype not in claims_by_type:
-            claims_by_type[ctype] = []
-        claims_by_type[ctype].append(c)
-
-    # Render the grouped claims
-    for ctype, claims in claims_by_type.items():
-        st.subheader(f"📌 {ctype}s")
-        for c in claims:
-            trust_labels = {
-                "VERIFIED": "Corroborated (2+ source files)",
-                "SINGLE_SOURCE": "Single source",
-                "MISSING_EVIDENCE": "Missing evidence",
-                "CONFLICTING": "Conflicting",
-            }
-            trust_badge = trust_labels.get(c["trust_status"], "Unknown")
-            source_label = "Cached demo claim | " if c["claim_source"] == "cached_demo" else ""
-
-            with st.expander(f"{source_label}{trust_badge} {c['claim_text'][:60]}..."):
-                st.write(f"**{c['claim_text']}**")
-                
-                # Fetch evidence for transparency
-                evidence = get_claim_evidence(user_role, c["claim_id"])
-                
-                if evidence:
-                    st.markdown("---")
-                    st.markdown("#### 🔗 Supporting Evidence")
-                    for ev in evidence:
-                        st.info(f"📄 **{ev['file_name']}** (`{ev['reference_location']}`)\n> {ev['excerpt']}")
+if not approved_claims:
+    empty_state(
+        "No approved claims are available for this handover yet.",
+        "A Reviewer must approve claims before they appear here.",
+    )
 else:
-    st.info("No approved claims available for handover yet. A Reviewer needs to approve claims in the Review dashboard.")
+    claims_by_type: dict[str, list] = {}
+    for claim in approved_claims:
+        claims_by_type.setdefault(claim["claim_type"], []).append(claim)
+
+    for claim_type, claims in claims_by_type.items():
+        st.subheader(claim_type)
+        for claim in claims:
+            with st.container(border=True):
+                st.markdown(
+                    f"{trust_badge(claim['trust_status'])} "
+                    f"{review_badge(claim['review_status'])} "
+                    f"{origin_badge(claim['claim_source'])}",
+                    unsafe_allow_html=True,
+                )
+                st.write(claim["claim_text"])
+                with st.expander("Source evidence"):
+                    evidence_list = get_claim_evidence(user_role, claim["claim_id"])
+                    if not evidence_list:
+                        empty_state("No readable source evidence is available for this claim.")
+                    for evidence in evidence_list:
+                        st.markdown(f"**{evidence['file_name']}**")
+                        st.markdown(
+                            sensitivity_badge(evidence["sensitivity"]),
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(evidence["reference_location"] or "Source location unavailable")
+                        st.write(evidence["excerpt"])
+
+footer()

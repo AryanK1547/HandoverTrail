@@ -8,11 +8,13 @@ Run from the application directory:
 .\.venv\Scripts\python.exe -m pytest -q tests
 ```
 
-Round 2 baseline: **15 passed**. R3-0 added an additive migration test; the R3-0 result was **16 passed**. The latest R3-1 suite result is **23 passed**. Tests use temporary databases selected through `HANDOVERTRAIL_DB`; they cover sensitivity-aware retrieval, role authorization and audit rows, upload validation/parsing, validator thresholds, and cached demo evidence anchors.
+Round 2 baseline: **15 passed**. R3-0 added an additive migration test; the R3-0 result was **16 passed**. R3-1 passed **23 tests**; the R3-UI suite passes **25 tests**. Tests use temporary databases selected through `HANDOVERTRAIL_DB`; they cover sensitivity-aware retrieval, role authorization and audit rows, upload validation/parsing, validator thresholds, cached demo evidence anchors, badge HTML escaping, and UI contrast-token thresholds.
 
 R3-1 coverage adds synthetic-only checks for email, phone, credential-like token, and ID-number masking; both provider gateway paths are replaced with fake functions in tests; restricted chunks are rejected at the gateway; mixed-sensitivity extraction sends only public chunks to a fake provider and handles restricted chunks locally; provider failure falls back locally; and Incoming retrieval masks claim text and public evidence. OpenRouter request construction is tested using a fake HTTP transport. These tests do not make real provider requests.
 
 Streamlit `AppTest` also rendered the landing page and all source/review/handover scripts against a fresh temporary database without app exceptions. Its first default-timeout attempt expired; rerunning each script with a 20-second test timeout passed. This is a local startup/UI smoke check, not a live Cloud test.
+
+The UI snapshot set is in `qa/ui/`: `before-375.png`, `before-768.png`, `before-1440.png`, and matching `after-*.png` files. At all three viewport widths the document and body widths matched the viewport width. At 375 px the saved screenshot has the Streamlit sidebar open because the browser viewport was resized from desktop; the navigation drawer must be collapsed to see the page content. The mobile rail collapsed to a single step label.
 
 ## Startup and fresh-clone journey
 
