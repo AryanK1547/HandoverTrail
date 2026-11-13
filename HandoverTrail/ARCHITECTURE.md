@@ -46,7 +46,11 @@ The handover page reports only the number of approved claims hidden because they
 - Claim Ledger as relational tables (claims, claim_evidence, reviews, audit_logs): every claim must link to source excerpts, so unsupported claims show as "Missing evidence" instead of looking like facts.
 - One retrieval layer that requires a role for every read: pages cannot fetch data without a role, giving a single place to enforce access.
 - Strict visibility rule: Incoming sees a claim only if it is approved and every linked source is public; no partial leaks.
-- Read-time filtering first because it can be tested deterministically; filtering before provider prompts is the first Round 3 task.
+- Read-time authorization is backed by public-only provider prompts and pre-call masking; both checks use the same role/sensitivity rules.
 - A single provider gateway for Gemini -> pinned OpenRouter model -> labelled local heuristic keeps public-only filtering and masking at the external-call boundary; extraction remains capped at three runs per session.
 - Cached demo claims seeded on first start so the review flow works with no API call.
 - Restricted evidence stays local to the app's heuristic extraction; provider-generated claims cite only the public evidence supplied to the gateway.
+
+## Presentation layer
+
+`ui.py` centralizes the dark-theme CSS, page configuration, role identity, workflow rail, database-backed status guidance, accessible text badges, and footer. `.streamlit/config.toml` owns the base colors; CSS only refines layout and focus states. The app uses native Streamlit page links, tabs, containers, dialogs, status messages, and toasts. Dynamic badge text is HTML-escaped before rendering.

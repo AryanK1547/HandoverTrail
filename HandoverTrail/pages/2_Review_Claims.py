@@ -1,157 +1,213 @@
-import streamlit as st
 import os
 import sys
+
+import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-# Ensure parent directory is in path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from database import bootstrap
 from extractor import extract_claims_from_evidence
 from permissions import can_review, perform_claim_review
 from retrieval import get_claim_evidence, get_visible_claims
-from ui_helpers import render_role_selector
+from ui import (
+    configure_page,
+    empty_state,
+    footer,
+    latest_extraction_method,
+    origin_badge,
+    page_shell,
+    review_badge,
+    show_flash_toast,
+    trust_badge,
+)
 from validator import validate_project_claims
 
+configure_page("Review claims · HandoverTrail")
 bootstrap()
 
-st.set_page_config(page_title="Review Claims - HandoverTrail", page_icon="⚖️")
-
-render_role_selector()
-
-st.title("⚖️ Candidate Claims & Verification Engine")
-st.markdown("Extract structured claims from evidence, inspect linked sources, and perform human reviews.")
-
 PROJECT_ID = "PROJ-DEMO-001"
-user_role = st.session_state["user_role"]
+user_role, counts = page_shell(
+    4,
+    "Review claims",
+    "Inspect source evidence, check what is supported, and record a human review decision.",
+)
+show_flash_toast()
+extraction_notice = st.session_state.pop("ui_extraction_notice", None)
+if extraction_notice:
+    st.warning(extraction_notice)
 
-# --- EXTRACTION & VALIDATION CONTROLS ---
-st.subheader("⚡ Action Controls")
-
-# API keys stay in Streamlit secrets and are never displayed in the UI.
 try:
-    api_key_secret = st.secrets.get("GEMINI_API_KEY", None)
-    openrouter_api_key_secret = st.secrets.get("OPENROUTER_API_KEY", None)
+    api_key_secret = st.secrets.get("GEMINI_API_KEY")
+    openrouter_api_key_secret = st.secrets.get("OPENROUTER_API_KEY")
 except StreamlitSecretNotFoundError:
     api_key_secret = None
     openrouter_api_key_secret = None
+
 if "ai_extraction_runs" not in st.session_state:
     st.session_state["ai_extraction_runs"] = 0
 MAX_AI_EXTRACTION_RUNS = 3
 
-col1, col2 = st.columns(2)
+with st.container(border=True):
+    st.subheader("Reconstruct and validate")
+    st.caption(
+        "Only public-source excerpts are sent through the provider gateway. Restricted-source "
+        "excerpts use the local heuristic."
+    )
+    extraction_col, validation_col = st.columns(2)
+    with extraction_col:
+        limit_reached = st.session_state["ai_extraction_runs"] >= MAX_AI_EXTRACTION_RUNS
+        if limit_reached:
+            st.info("This session reached its three-run limit. Cached demo claims remain available.")
+        if st.button(
+            "Extract claims",
+            type="primary",
+            disabled=not can_review(user_role) or limit_reached,
+        ):
+            st.session_state["ai_extraction_runs"] += 1
+            with st.status("Preparing permitted evidence...", expanded=True) as progress:
+                def update_extraction_progress(_value: int, message: str) -> None:
+                    progress.update(label=message, state="running")
 
-with col1:
-    limit_reached = st.session_state["ai_extraction_runs"] >= MAX_AI_EXTRACTION_RUNS
-    if limit_reached:
-        st.info("AI extraction limit reached for this session; cached demo claims are being used.")
-    if st.button(
-        "🤖 1. Extract Claims",
-        width="stretch",
-        disabled=not can_review(user_role) or limit_reached,
-    ):
-        st.session_state["ai_extraction_runs"] += 1
-        progress_bar = st.progress(0, text="Starting claim extraction...")
-
-        def update_extraction_progress(value, message):
-            progress_bar.progress(value, text=message)
-
-        res = extract_claims_from_evidence(
-            PROJECT_ID,
-            api_key=api_key_secret,
-            openrouter_api_key=openrouter_api_key_secret,
-            progress_callback=update_extraction_progress,
-        )
-        if res.get("status") == "success":
-            st.success(
-                f"Generated {res['claims_created']} claims using [{res['method']}]. "
-                f"{res.get('masked_values', 0)} values masked before provider calls."
-            )
-            if res.get("fallback_reason"):
-                if res["method"] == "Universal Keyword Fallback":
-                    st.warning(f"AI providers unavailable. {res['fallback_reason']}")
+                result = extract_claims_from_evidence(
+                    PROJECT_ID,
+                    api_key=api_key_secret,
+                    openrouter_api_key=openrouter_api_key_secret,
+                    progress_callback=update_extraction_progress,
+                )
+                if result.get("status") == "success":
+                    method = result["method"]
+                    latest_extraction_method(method)
+                    progress.update(
+                        label=f"Extraction saved using {method}.",
+                        state="complete",
+                    )
+                    st.session_state["ui_flash_toast"] = (
+                        f"Created {result['claims_created']} claims; "
+                        f"{result.get('masked_values', 0)} values masked before provider calls."
+                    )
+                    if result.get("fallback_reason"):
+                        st.session_state["ui_extraction_notice"] = result["fallback_reason"]
+                    st.rerun()
                 else:
-                    st.info(res["fallback_reason"])
-        else:
-            st.error(res.get("message"))
-        if st.session_state["ai_extraction_runs"] >= MAX_AI_EXTRACTION_RUNS:
-            st.info("AI extraction limit reached for this session; cached demo claims are being used.")
+                    progress.update(
+                        label="Extraction did not complete. Existing claims remain available.",
+                        state="error",
+                    )
+                    st.error(result.get("message", "Extraction failed."))
 
-with col2:
-    if st.button("🔍 2. Validate Evidence", width="stretch", disabled=not can_review(user_role)):
-        try:
-            count = validate_project_claims(user_role, PROJECT_ID)
-        except PermissionError as exc:
-            st.error(f"Validation not permitted: {exc}")
-        else:
-            st.success(f"Validated {count} claims based on database evidence links!")
+    with validation_col:
+        if st.button(
+            "Validate evidence links",
+            disabled=not can_review(user_role),
+        ):
+            try:
+                validated_count = validate_project_claims(user_role, PROJECT_ID)
+            except PermissionError as exc:
+                st.error(f"Validation not permitted: {exc}")
+            else:
+                st.session_state["ui_flash_toast"] = (
+                    f"Validated {validated_count} claims against linked evidence."
+                )
+                st.rerun()
 
 if not can_review(user_role):
-    st.info("Select Admin or Reviewer to extract, validate, or review claims.")
+    st.info("Select Admin or Reviewer to extract, validate, approve, or reject claims.")
 
-st.divider()
-
-# --- CLAIMS & EVIDENCE INSPECTION QUEUE ---
-st.subheader("📋 Candidate Claims Queue")
-st.caption(
-    "Means the same claim is supported by 2+ different files; it does not yet check that they agree. "
-    "Conflict detection is planned."
-)
 claims = get_visible_claims(user_role, PROJECT_ID)
+if any(claim["claim_source"] == "cached_demo" for claim in claims):
+    st.info("Cached synthetic demo claims are available to review without an API call.")
 
-if claims:
-    if any(c["claim_source"] == "cached_demo" for c in claims):
-        st.info("Cached demo claims are included below for review without an API call.")
-    for c in claims:
-        claim_id = c["claim_id"]
-        trust_labels = {
-            "VERIFIED": "Corroborated (2+ source files)",
-            "SINGLE_SOURCE": "Single source",
-            "MISSING_EVIDENCE": "Missing evidence",
-            "CONFLICTING": "Conflicting",
-        }
-        trust_label = trust_labels.get(c["trust_status"], "Unknown")
-        trust_color = "🟢" if c["trust_status"] == "VERIFIED" else "🟡" if c["trust_status"] == "SINGLE_SOURCE" else "🔴"
-        review_icon = "⏳" if c["review_status"] == "PENDING" else "✅" if c["review_status"] == "APPROVED" else "❌"
-        source_label = (
-            " [Cached demo claim]"
-            if c["claim_source"] == "cached_demo"
-            else f" [Method: {c['claim_source']}]"
-        )
+st.subheader("Candidate claims")
+st.caption(
+    "Multiple sources means two or more files are linked; the system has not checked whether "
+    "their statements agree."
+)
+if not claims:
+    empty_state(
+        "No claims are available for this role yet.",
+        "Connect and parse sources, then run claim extraction.",
+    )
+else:
+    for claim in claims:
+        claim_id = claim["claim_id"]
+        with st.container(border=True):
+            st.markdown(
+                f"{trust_badge(claim['trust_status'])} "
+                f"{review_badge(claim['review_status'])} "
+                f"{origin_badge(claim['claim_source'])}",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"{claim['claim_type']} · Claim ID {claim_id}")
+            st.write(claim["claim_text"])
 
-        with st.expander(
-            f"{review_icon} {trust_color} [{trust_label}] [{c['claim_type']}]"
-            f"{source_label} {c['claim_text'][:80]}..."
-        ):
-            st.write("**Full Claim Text:**", c["claim_text"])
-            st.write(f"**Claim ID:** `{claim_id}` | **Type:** `{c['claim_type']}` | **Review Status:** `{c['review_status']}`")
+            with st.expander("Evidence and provenance"):
+                evidence_list = get_claim_evidence(user_role, claim_id)
+                if evidence_list:
+                    for evidence in evidence_list:
+                        st.markdown(f"**{evidence['file_name']}**")
+                        st.caption(evidence["reference_location"] or "Source location unavailable")
+                        st.write(evidence["excerpt"])
+                else:
+                    empty_state("No readable evidence excerpts are linked to this claim.")
+                st.markdown(
+                    f"Origin: {origin_badge(claim['claim_source'])}",
+                    unsafe_allow_html=True,
+                )
 
-            # Fetch linked evidence chunks for this claim
-            evd_list = get_claim_evidence(user_role, claim_id)
-
-            if evd_list:
-                st.markdown("#### 🔗 Linked Evidence Sources")
-                for ev in evd_list:
-                    st.info(f"**Source:** {ev['file_name']} (`{ev['reference_location']}`)\n\n> {ev['excerpt']}")
-            else:
-                st.warning("⚠️ No evidence chunks linked to this claim!")
-            
-            # --- THE REVIEW BUTTONS ---
-            if can_review(user_role) and c["review_status"] == "PENDING":
-                st.markdown("#### ✍️ Human Review Action")
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if st.button("✅ Approve Claim", key=f"app_{claim_id}", width="stretch"):
+            if can_review(user_role) and claim["review_status"] == "PENDING":
+                approve_col, reject_col = st.columns(2)
+                with approve_col:
+                    if st.button(
+                        "Approve claim",
+                        key=f"approve_{claim_id}",
+                        type="primary",
+                    ):
                         try:
                             perform_claim_review(user_role, claim_id, "APPROVED")
                         except PermissionError as exc:
                             st.error(f"Review not permitted: {exc}")
                         else:
+                            st.session_state["ui_flash_toast"] = (
+                                "Claim approved and saved. It is now eligible for handover."
+                            )
                             st.rerun()
-                with btn_col2:
-                    if st.button("❌ Reject Claim", key=f"rej_{claim_id}", width="stretch"):
-                        try:
-                            perform_claim_review(user_role, claim_id, "REJECTED")
-                        except PermissionError as exc:
-                            st.error(f"Review not permitted: {exc}")
-                        else:
-                            st.rerun()
+                with reject_col:
+                    if st.button(
+                        "Reject claim",
+                        key=f"reject_{claim_id}",
+                    ):
+                        st.session_state["pending_rejection_id"] = claim_id
+                        st.rerun()
+
+@st.dialog("Confirm claim rejection")
+def confirm_rejection(claim_id: str) -> None:
+    st.write("Reject this claim? The decision will be saved to the review and audit history.")
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button("Confirm rejection", type="primary"):
+            try:
+                perform_claim_review(user_role, claim_id, "REJECTED")
+            except PermissionError as exc:
+                st.error(f"Review not permitted: {exc}")
+            else:
+                st.session_state.pop("pending_rejection_id", None)
+                st.session_state["ui_flash_toast"] = "Claim rejection saved."
+                st.rerun()
+    with cancel_col:
+        if st.button("Cancel"):
+            st.session_state.pop("pending_rejection_id", None)
+            st.rerun()
+
+pending_rejection_id = st.session_state.get("pending_rejection_id")
+if pending_rejection_id:
+    pending_claim = next(
+        (claim for claim in claims if claim["claim_id"] == pending_rejection_id),
+        None,
+    )
+    if pending_claim:
+        confirm_rejection(pending_rejection_id)
+    else:
+        st.session_state.pop("pending_rejection_id", None)
+
+footer()
