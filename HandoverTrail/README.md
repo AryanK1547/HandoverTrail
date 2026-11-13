@@ -11,8 +11,8 @@ The demo includes role and source-sensitivity filtering, a local SQLite database
 1. Load the packaged demo or upload `.txt` and `.csv` sources.
 2. Parse sources into excerpts linked to their filenames and chunk locations.
 3. Extract candidate claims with Gemini, then the pinned OpenRouter model, or use the labeled local heuristic fallback.
-4. Review claims, inspect conflicts and evidence gaps, and approve or reject them as Admin or Reviewer.
-5. Create questions from open gaps; the assigned Departing role answers them as interview evidence.
+4. Review, edit, and approve claims; an edit returns the claim to pending review and is retained in History.
+5. Inspect conflicts and evidence gaps, then create questions from open gaps; the assigned Departing role answers them as interview evidence.
 6. View approved, authorized claims and citations as Incoming.
 
 An empty database is seeded with demo sources and cached demo claims, so the review flow can be explored without an API call.

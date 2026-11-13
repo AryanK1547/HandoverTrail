@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import database
+import claim_history
 import conflict_detection
 import extractor
 import interviews
@@ -1164,3 +1165,87 @@ def test_exit_interview_answer_becomes_scoped_pending_evidence_and_resolves_gap(
     assert result["source_id"] in {
         source["source_id"] for source in retrieval.get_visible_sources("Incoming", PROJECT_ID)
     }
+
+
+def test_claim_edits_append_history_and_revoke_approved_incoming_visibility(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    evidence_id = _create_source(
+        "SRC-EDIT",
+        "edit.txt",
+        "public",
+        "The synthetic launch owner is Priya Shah.",
+    )
+    _create_claim(
+        "CLM-EDIT",
+        [evidence_id],
+        review_status="APPROVED",
+        claim_text="Launch owner is Priya Shah.",
+        claim_type="Owner",
+    )
+    assert retrieval.get_visible_claims("Incoming", PROJECT_ID)[0]["claim_id"] == "CLM-EDIT"
+
+    assert claim_history.edit_claim(
+        "Reviewer",
+        "CLM-EDIT",
+        "Launch owner is Alex Chen.",
+        "The departing teammate corrected the assignment.",
+    ) == 1
+    assert retrieval.get_visible_claims("Incoming", PROJECT_ID) == []
+    assert claim_history.edit_claim(
+        "Admin",
+        "CLM-EDIT",
+        "Launch owner is Alex Chen and the backup is Priya Shah.",
+        "Added the agreed backup owner.",
+    ) == 2
+
+    history = claim_history.get_claim_history("Reviewer", "CLM-EDIT")
+    assert history["current_text"] == "Launch owner is Alex Chen and the backup is Priya Shah."
+    assert history["review_status"] == "EDITED_PENDING_REVIEW"
+    assert [version["text"] for version in history["versions"]] == [
+        "Launch owner is Priya Shah.",
+        "Launch owner is Alex Chen.",
+    ]
+    assert [version["version"] for version in history["versions"]] == [1, 2]
+    assert [version["reason"] for version in history["versions"]] == [
+        "The departing teammate corrected the assignment.",
+        "Added the agreed backup owner.",
+    ]
+
+    conn = database.get_connection()
+    reviews = conn.execute(
+        "SELECT action, comment FROM reviews WHERE claim_id = 'CLM-EDIT' ORDER BY timestamp"
+    ).fetchall()
+    audit_count = conn.execute(
+        "SELECT COUNT(*) FROM audit_logs WHERE target_id = 'CLM-EDIT' AND action = 'EDIT_CLAIM'"
+    ).fetchone()[0]
+    conn.close()
+    assert len(reviews) == 2
+    assert all(review["action"] == "EDITED" for review in reviews)
+    assert audit_count == 2
+
+    permissions.perform_claim_review("Reviewer", "CLM-EDIT", "APPROVED")
+    assert retrieval.get_visible_claims("Incoming", PROJECT_ID)[0]["claim_id"] == "CLM-EDIT"
+
+
+def test_claim_edits_require_reviewer_and_a_reason(isolated_db: Path) -> None:
+    _create_project()
+    evidence_id = _create_source("SRC-EDIT-DENIED", "edit-denied.txt", "public", "Evidence")
+    _create_claim("CLM-EDIT-DENIED", [evidence_id])
+
+    with pytest.raises(PermissionError):
+        claim_history.edit_claim(
+            "Incoming",
+            "CLM-EDIT-DENIED",
+            "Changed claim",
+            "A reason",
+        )
+    with pytest.raises(ValueError, match="reason"):
+        claim_history.edit_claim(
+            "Reviewer",
+            "CLM-EDIT-DENIED",
+            "Changed claim",
+            " ",
+        )
+    assert claim_history.get_claim_history("Reviewer", "CLM-EDIT-DENIED")["versions"] == []

@@ -13,6 +13,7 @@ from conflict_detection import (
     get_gap_records,
     resolve_conflict,
 )
+from claim_history import edit_claim, get_claim_history
 from extractor import extract_claims_from_evidence
 from permissions import can_review, perform_claim_review
 from retrieval import get_claim_evidence, get_visible_claims
@@ -235,7 +236,54 @@ else:
                     unsafe_allow_html=True,
                 )
 
-            if can_review(user_role) and claim["review_status"] == "PENDING":
+            if can_review(user_role):
+                with st.expander("Edit claim"):
+                    with st.form(f"edit_claim_{claim_id}"):
+                        edited_claim_text = st.text_area(
+                            "Claim text",
+                            value=claim["claim_text"],
+                            key=f"claim_text_{claim_id}",
+                        )
+                        edit_reason = st.text_input(
+                            "Reason for edit",
+                            key=f"edit_reason_{claim_id}",
+                        )
+                        edit_submitted = st.form_submit_button("Save claim edit")
+                    if edit_submitted:
+                        try:
+                            edit_claim(
+                                user_role,
+                                claim_id,
+                                edited_claim_text,
+                                edit_reason,
+                            )
+                        except (PermissionError, ValueError) as exc:
+                            st.error(f"Could not edit claim: {exc}")
+                        else:
+                            st.session_state["ui_flash_toast"] = (
+                                "Claim edit saved and marked pending review."
+                            )
+                            st.rerun()
+
+                with st.expander("History"):
+                    history = get_claim_history(user_role, claim_id)
+                    st.markdown(
+                        f"{review_badge(history['review_status'])} **Current**",
+                        unsafe_allow_html=True,
+                    )
+                    st.write(history["current_text"])
+                    for version in history["versions"]:
+                        st.markdown(f"**Previous version {version['version']}**")
+                        st.write(version["text"])
+                        st.caption(
+                            f"Edited by {version['editor_name']} · {version['created_at']} · "
+                            f"Reason: {version['reason']}"
+                        )
+
+            if can_review(user_role) and claim["review_status"] in {
+                "PENDING",
+                "EDITED_PENDING_REVIEW",
+            }:
                 approve_col, reject_col = st.columns(2)
                 with approve_col:
                     if st.button(

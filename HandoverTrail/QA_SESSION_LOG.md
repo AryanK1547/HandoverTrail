@@ -149,3 +149,14 @@
 - Plain-language concepts: `assigned_user_id` prevents other Departing identities from seeing this question; additive column migration adds that field without replacing old rows; source-scoped extraction only reads selected interview chunks and appends results; interview visibility is withheld until review approval so a public sensitivity setting does not bypass the approval gate.
 - Verification: focused interview/migration tests passed (3 passed, 27 deselected); full suite passed 32 tests; compileall and `git diff --check` passed. AppTest rendered the page under Reviewer and Departing roles with no exceptions. Tests replace provider functions with fail-fast fakes and make no provider calls.
 - No real Gemini or OpenRouter calls were made. Streamlit Cloud behavior remains unverified.
+
+## R3-4 claim editing and version history
+
+- Date/time: 2026-11-13 14:55 IST onward.
+- Branch: `r3/claim-history`, based on committed R3-3 branch `r3/exit-interview`; no push.
+- Added reviewer/admin claim editing with a required non-empty reason. Each edit appends the previous text to `claim_versions` with the next version number, editor, reason, and timestamp; the current text is updated in `claims`, the review state becomes `EDITED_PENDING_REVIEW`, and EDITED review/audit rows are written.
+- The Review Claims page has an edit form and History expander. It shows the current pending text and prior snapshots in ascending version order. Edited claims can be approved/rejected using the existing workflow.
+- Editing any previously approved claim removes it from Incoming visibility until reapproved because the stored review status is no longer APPROVED.
+- Plain-language concept: version history is append-only, so old text is never overwritten; each row records the prior text being replaced and the reason for the change. The edit is also passed through conflict/gap validation so the displayed trust state follows the current text.
+- Verification: focused tests passed (2 passed, 30 deselected); full suite passed 34 tests; compileall and `git diff --check` passed. Fresh-database AppTest rendered 13 edit forms, History expanders, and the conflict controls without exceptions.
+- No real Gemini or OpenRouter calls were made. Streamlit Cloud behavior remains unverified.
