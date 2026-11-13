@@ -159,6 +159,26 @@ def bootstrap(db_path: str | Path | None = None) -> None:
     );
     """)
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS claim_conflicts (
+        conflict_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        attribute TEXT NOT NULL,
+        claim_a TEXT NOT NULL,
+        claim_b TEXT NOT NULL,
+        status TEXT NOT NULL,
+        resolution TEXT NOT NULL DEFAULT 'UNRESOLVED',
+        resolved_by TEXT,
+        resolved_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (project_id, subject, attribute, claim_a, claim_b),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        FOREIGN KEY (claim_a) REFERENCES claims(claim_id) ON DELETE CASCADE,
+        FOREIGN KEY (claim_b) REFERENCES claims(claim_id) ON DELETE CASCADE,
+        FOREIGN KEY (resolved_by) REFERENCES users(user_id)
+    );
+    """)
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS gaps (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -273,6 +293,9 @@ def bootstrap(db_path: str | Path | None = None) -> None:
     conn.commit()
     conn.close()
     _seed_empty_demo_database(db_path)
+    from round3_demo import seed_conflict_demo
+
+    seed_conflict_demo(db_path)
 
 
 def _seed_empty_demo_database(db_path: str | Path | None = None) -> None:
@@ -351,7 +374,6 @@ def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
     now = datetime.now().isoformat()
     for cached_claim in cache.get("claims", []):
         evidence_ids = []
-        source_files = set()
         for reference in cached_claim.get("evidence", []):
             location = (reference.get("source_file"), reference.get("chunk_index"))
             evidence_id = evidence_by_location.get(location)
@@ -361,13 +383,11 @@ def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
                     f"Cached claim references missing demo evidence: {location[0]} chunk {location[1]}."
                 )
             evidence_ids.append(evidence_id)
-            source_files.add(location[0])
         if not evidence_ids:
             conn.close()
             raise ValueError("Every cached demo claim must include at least one evidence link.")
 
         claim_id = f"CLM-{uuid.uuid4().hex[:8].upper()}"
-        trust_status = "VERIFIED" if len(source_files) >= 2 else "SINGLE_SOURCE"
         conn.execute(
             """
             INSERT INTO claims
@@ -380,7 +400,7 @@ def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
                 project_id,
                 cached_claim["claim_text"],
                 cached_claim["claim_type"],
-                trust_status,
+                "SINGLE_SOURCE",
                 now,
                 now,
             ),

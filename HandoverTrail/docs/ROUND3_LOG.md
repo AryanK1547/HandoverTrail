@@ -26,3 +26,13 @@
 - Material icon token labels rendered as literal icon names in the first browser check, so they were removed rather than leaving overlapping labels. The workflow links keep explicit text labels; badges use a simple symbol plus readable status text.
 - Local browser check: `/_stcore/health` returned `ok`. Before/after screenshots are saved in `qa/ui/` at 375, 768, and 1440 px. At each width document/body widths equaled viewport width; the 375 px rail collapsed to the current step. The 375 px screenshot was captured after resizing a desktop browser with the sidebar expanded, so the navigation drawer occupies the view until collapsed.
 - No real Gemini or OpenRouter calls were made. The app UI displayed whether a provider was configured, without displaying any key. No secrets were printed.
+
+## R3-2 conflict and missing-evidence detection
+
+- Work branch: `r3/conflicts`, based on `r3/ui`; not pushed.
+- Added idempotently seeded synthetic conflicts for owner, release date, and retry policy, plus task-owner, decision-date/rationale, risk-mitigation, and single-source gaps.
+- Added local claim-slot extraction, name/date normalization, definite and possible conflict classifications, and corroboration only when normalized values agree across separate sources. Conflict detection requires no provider call.
+- Added side-by-side comparison cards with evidence citations and audited reviewer resolution actions. Open evidence gaps are shown with their related claim and evidence.
+- The validator now reports `VERIFIED` only when normalized claim slots agree. Two source links by themselves remain `SINGLE_SOURCE`.
+- Plain-language concepts: slots make claims comparable; normalization makes formats such as `15 Nov 2026` and `2026-11-15` equivalent; similar text is only a possible match; SQLite's stable IDs prevent duplicate gap rows on repeated scans; audit rows preserve review decisions.
+- Verification: full suite **30 passed**; compileall, `git diff --check`, and fresh-database Streamlit AppTest passed. Tests use synthetic fixtures and make no provider calls.

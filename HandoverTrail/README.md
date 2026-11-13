@@ -12,7 +12,7 @@ The demo includes role and source-sensitivity filtering, a local SQLite database
 2. Parse sources into excerpts linked to their filenames and chunk locations.
 3. Extract candidate claims with Gemini, then the pinned OpenRouter model, or use the labeled local heuristic fallback.
 4. Review and approve or reject claims as Admin or Reviewer.
-5. View approved, authorized claims and their citations as Incoming.
+5. Inspect conflicts and evidence gaps, then view approved, authorized claims and citations as Incoming.
 
 An empty database is seeded with demo sources and cached demo claims, so the review flow can be explored without an API call.
 
@@ -49,7 +49,9 @@ Only public-sensitivity excerpts can be sent to Gemini or OpenRouter. Before a p
 - **Admin** and **Reviewer** can read public and restricted demo sources and can review claims.
 - **Incoming** can read approved claims only when every linked source is public.
 - Roles are simulated by a Streamlit selector; there is no login or authenticated identity.
-- **Multiple sources — agreement not checked** means a claim links to evidence from at least two distinct files. Conflict detection is not implemented.
+- **Corroborated** means matching subject/attribute values were found across separate sources after name/date normalization. A different value is shown as a conflict or possible conflict for review.
+- **Evidence gaps** include tasks without owners, decisions without dates or rationale, risks without mitigation, and single-source claims. The current detector uses explicit text rules and may miss differently worded statements.
+- Conflict comparisons are deterministic and run locally; provider calls are not used for conflict or gap detection.
 
 The demo's restricted source is synthetic test data, not a real credential or contact record.
 

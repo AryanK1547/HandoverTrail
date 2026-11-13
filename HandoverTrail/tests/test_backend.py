@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import database
+import conflict_detection
 import extractor
 import masking
 import permissions
@@ -73,6 +74,8 @@ def _create_claim(
     claim_id: str,
     evidence_ids: list[str] | None = None,
     review_status: str = "PENDING",
+    claim_text: str | None = None,
+    claim_type: str = "Decision",
 ) -> None:
     conn = database.get_connection()
     conn.execute(
@@ -80,9 +83,9 @@ def _create_claim(
         INSERT INTO claims
             (claim_id, project_id, claim_text, claim_type, trust_status,
              review_status, created_at, updated_at)
-        VALUES (?, ?, ?, 'Decision', 'SINGLE_SOURCE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, 'SINGLE_SOURCE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,
-        (claim_id, PROJECT_ID, f"Claim {claim_id}", review_status),
+        (claim_id, PROJECT_ID, claim_text or f"Claim {claim_id}", claim_type, review_status),
     )
     conn.executemany(
         "INSERT INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?)",
@@ -135,6 +138,7 @@ def test_round3_schema_migration_is_additive_and_idempotent(
     round3_tables = {
         "claim_versions",
         "claim_slots",
+        "claim_conflicts",
         "gaps",
         "questions",
         "answers",
@@ -406,7 +410,7 @@ def test_incoming_reads_mask_claims_and_public_evidence(isolated_db: Path) -> No
 def test_cold_start_claims_are_labeled_cached_demo(isolated_db: Path) -> None:
     claims = retrieval.get_visible_claims("Reviewer", "PROJ-DEMO-001")
 
-    assert len(claims) == 4
+    assert len(claims) == 13
     assert all(claim["claim_source"] == "cached_demo" for claim in claims)
 
 
@@ -486,9 +490,9 @@ def test_bootstrap_and_demo_paths_work_from_repository_parent(
     conn.close()
 
     expected_demo_dir = database.PROJECT_ROOT / "data" / "demo_project"
-    assert source_count == 5
-    assert evidence_count == 14
-    assert cached_claim_count == 4
+    assert source_count == 8
+    assert evidence_count == 17
+    assert cached_claim_count == 13
     assert source_parser._source_path(
         "PROJ-DEMO-001",
         "meeting_notes.txt",
@@ -715,5 +719,241 @@ def test_validator_trust_status_thresholds(isolated_db: Path) -> None:
     assert statuses == {
         "CLM-ZERO": "MISSING_EVIDENCE",
         "CLM-ONE": "SINGLE_SOURCE",
-        "CLM-TWO": "VERIFIED",
+        "CLM-TWO": "SINGLE_SOURCE",
     }
+
+
+def _create_slot_claim(
+    claim_id: str,
+    source_id: str,
+    file_name: str,
+    claim_text: str,
+    claim_type: str = "Owner",
+) -> None:
+    evidence_id = _create_source(source_id, file_name, "public", claim_text)
+    _create_claim(
+        claim_id,
+        [evidence_id],
+        claim_text=claim_text,
+        claim_type=claim_type,
+    )
+
+
+def test_conflict_detector_flags_disagreeing_owners(isolated_db: Path) -> None:
+    _create_project()
+    _create_slot_claim(
+        "CLM-OWNER-A",
+        "SRC-OWNER-A",
+        "owner-a.txt",
+        "Payment webhook owner is Priya Shah.",
+    )
+    _create_slot_claim(
+        "CLM-OWNER-B",
+        "SRC-OWNER-B",
+        "owner-b.txt",
+        "Payment webhook owner is Alex Chen.",
+    )
+
+    conflict_detection.detect_project_conflicts("Reviewer", PROJECT_ID)
+    assert validator.validate_project_claims("Reviewer", PROJECT_ID) == 2
+
+    conn = database.get_connection()
+    conflict = conn.execute(
+        """
+        SELECT subject, attribute, status, claim_a, claim_b
+        FROM claim_conflicts WHERE project_id = ?
+        """,
+        (PROJECT_ID,),
+    ).fetchone()
+    statuses = {
+        row["claim_id"]: row["trust_status"]
+        for row in conn.execute(
+            "SELECT claim_id, trust_status FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    }
+    conn.close()
+    assert (conflict["subject"], conflict["attribute"], conflict["status"]) == (
+        "Payment webhook",
+        "owner",
+        "CONFLICTING",
+    )
+    assert statuses == {"CLM-OWNER-A": "CONFLICTING", "CLM-OWNER-B": "CONFLICTING"}
+
+
+def test_conflict_detector_normalizes_names_and_dates(isolated_db: Path) -> None:
+    _create_project()
+    _create_slot_claim(
+        "CLM-OWNER-LOWER",
+        "SRC-OWNER-LOWER",
+        "owner-lower.txt",
+        "Payment webhook owner is Priya Shah.",
+    )
+    _create_slot_claim(
+        "CLM-OWNER-UPPER",
+        "SRC-OWNER-UPPER",
+        "owner-upper.txt",
+        "payment webhook owner is PRIYA SHAH.",
+    )
+    _create_slot_claim(
+        "CLM-DATE-WORDS",
+        "SRC-DATE-WORDS",
+        "date-words.txt",
+        "Release deadline is 15 Nov 2026.",
+        claim_type="Decision",
+    )
+    _create_slot_claim(
+        "CLM-DATE-ISO",
+        "SRC-DATE-ISO",
+        "date-iso.txt",
+        "Release deadline is 2026-11-15.",
+        claim_type="Decision",
+    )
+
+    conflict_detection.detect_project_conflicts("Reviewer", PROJECT_ID)
+    validator.validate_project_claims("Reviewer", PROJECT_ID)
+
+    conn = database.get_connection()
+    rows = conn.execute(
+        """
+        SELECT attribute, status FROM claim_conflicts
+        WHERE project_id = ? ORDER BY attribute
+        """,
+        (PROJECT_ID,),
+    ).fetchall()
+    statuses = {
+        row["claim_id"]: row["trust_status"]
+        for row in conn.execute(
+            "SELECT claim_id, trust_status FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    }
+    conn.close()
+    assert {(row["attribute"], row["status"]) for row in rows} == {
+        ("owner", "CORROBORATED"),
+        ("deadline", "CORROBORATED"),
+    }
+    assert all(value == "VERIFIED" for value in statuses.values())
+
+
+def test_similar_subject_mismatch_is_labelled_possible_conflict(isolated_db: Path) -> None:
+    _create_project()
+    _create_slot_claim(
+        "CLM-POSSIBLE-A",
+        "SRC-POSSIBLE-A",
+        "possible-a.txt",
+        "Payment webhook owner is Priya Shah.",
+    )
+    _create_slot_claim(
+        "CLM-POSSIBLE-B",
+        "SRC-POSSIBLE-B",
+        "possible-b.txt",
+        "Payment webhooks owner is Alex Chen.",
+    )
+
+    conflict_detection.detect_project_conflicts("Reviewer", PROJECT_ID)
+    validator.validate_project_claims("Reviewer", PROJECT_ID)
+
+    conn = database.get_connection()
+    conflict_status = conn.execute(
+        "SELECT status FROM claim_conflicts WHERE project_id = ?",
+        (PROJECT_ID,),
+    ).fetchone()[0]
+    trust_statuses = {
+        row["trust_status"]
+        for row in conn.execute(
+            "SELECT trust_status FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    }
+    conn.close()
+    assert conflict_status == "POSSIBLE_CONFLICT"
+    assert trust_statuses == {"SINGLE_SOURCE"}
+
+
+def test_gap_detector_covers_missing_owner_date_rationale_mitigation_and_single_source(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    _create_slot_claim(
+        "CLM-GAP-TASK",
+        "SRC-GAP-TASK",
+        "gap-task.txt",
+        "Task T-204 is open and has no owner.",
+        claim_type="Next action",
+    )
+    _create_slot_claim(
+        "CLM-GAP-DECISION",
+        "SRC-GAP-DECISION",
+        "gap-decision.txt",
+        "Decision: Switch cache strategy.",
+        claim_type="Decision",
+    )
+    _create_slot_claim(
+        "CLM-GAP-RISK",
+        "SRC-GAP-RISK",
+        "gap-risk.txt",
+        "Risk: retries may overload the API.",
+        claim_type="Risk",
+    )
+
+    conflict_detection.detect_project_conflicts("Reviewer", PROJECT_ID)
+    first_gap_count = len(conflict_detection.get_gap_records("Reviewer", PROJECT_ID))
+    conflict_detection.detect_project_conflicts("Reviewer", PROJECT_ID)
+    gaps = conflict_detection.get_gap_records("Reviewer", PROJECT_ID)
+    gap_types = {gap["gap_type"] for gap in gaps}
+
+    assert gap_types == {
+        "task_without_owner",
+        "decision_missing_date",
+        "decision_missing_rationale",
+        "risk_missing_mitigation",
+        "single_source_claim",
+    }
+    assert len(gaps) == first_gap_count
+
+
+def test_conflict_resolution_is_audited(isolated_db: Path) -> None:
+    _create_project()
+    _create_slot_claim(
+        "CLM-RESOLVE-A",
+        "SRC-RESOLVE-A",
+        "resolve-a.txt",
+        "Payment webhook owner is Priya Shah.",
+    )
+    _create_slot_claim(
+        "CLM-RESOLVE-B",
+        "SRC-RESOLVE-B",
+        "resolve-b.txt",
+        "Payment webhook owner is Alex Chen.",
+    )
+    conflict_detection.detect_project_conflicts("Reviewer", PROJECT_ID)
+    conn = database.get_connection()
+    conflict_id = conn.execute(
+        "SELECT conflict_id FROM claim_conflicts WHERE project_id = ?",
+        (PROJECT_ID,),
+    ).fetchone()[0]
+    conn.close()
+
+    conflict_detection.resolve_conflict("Reviewer", conflict_id, "KEEP_A")
+
+    conn = database.get_connection()
+    conflict = conn.execute(
+        "SELECT resolution, resolved_by FROM claim_conflicts WHERE conflict_id = ?",
+        (conflict_id,),
+    ).fetchone()
+    audit = conn.execute(
+        """
+        SELECT actor_id, action, target_type, target_id
+        FROM audit_logs WHERE target_id = ?
+        """,
+        (conflict_id,),
+    ).fetchone()
+    conn.close()
+    assert tuple(conflict) == ("KEEP_A", "USR-DEMO-REVIEWER")
+    assert tuple(audit) == (
+        "USR-DEMO-REVIEWER",
+        "RESOLVE_CONFLICT_KEEP_A",
+        "claim_conflict",
+        conflict_id,
+    )

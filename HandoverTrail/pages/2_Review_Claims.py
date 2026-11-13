@@ -7,6 +7,12 @@ from streamlit.errors import StreamlitSecretNotFoundError
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from database import bootstrap
+from conflict_detection import (
+    detect_project_conflicts,
+    get_conflict_records,
+    get_gap_records,
+    resolve_conflict,
+)
 from extractor import extract_claims_from_evidence
 from permissions import can_review, perform_claim_review
 from retrieval import get_claim_evidence, get_visible_claims
@@ -32,6 +38,8 @@ user_role, counts = page_shell(
     "Review claims",
     "Inspect source evidence, check what is supported, and record a human review decision.",
 )
+if can_review(user_role):
+    detect_project_conflicts(user_role, PROJECT_ID)
 show_flash_toast()
 extraction_notice = st.session_state.pop("ui_extraction_notice", None)
 if extraction_notice:
@@ -118,11 +126,83 @@ claims = get_visible_claims(user_role, PROJECT_ID)
 if any(claim["claim_source"] == "cached_demo" for claim in claims):
     st.info("Cached synthetic demo claims are available to review without an API call.")
 
+if can_review(user_role):
+    st.subheader("Conflicts and gaps")
+    st.caption(
+        "Rule-based comparisons show conflicting values or corroboration only when "
+        "normalized statements agree. Evidence gaps remain visible until addressed."
+    )
+    conflicts = get_conflict_records(user_role, PROJECT_ID)
+    if conflicts:
+        for conflict in conflicts:
+            with st.container(border=True):
+                st.markdown(
+                    f"**{conflict['subject']} · {conflict['attribute']}** "
+                    f"— {conflict['status'].replace('_', ' ').title()}"
+                )
+                version_a, version_b = st.columns(2)
+                for column, claim_id, claim_text, label in (
+                    (version_a, conflict["claim_a"], conflict["claim_a_text"], "Version A"),
+                    (version_b, conflict["claim_b"], conflict["claim_b_text"], "Version B"),
+                ):
+                    with column:
+                        st.markdown(f"**{label}**")
+                        st.write(claim_text)
+                        for evidence in get_claim_evidence(user_role, claim_id):
+                            st.caption(
+                                f"{evidence['file_name']} · "
+                                f"{evidence['reference_location'] or 'Source location unavailable'}"
+                            )
+                            st.write(evidence["excerpt"])
+                if conflict["status"] == "CORROBORATED":
+                    st.success("The normalized values agree across separate sources.")
+                elif conflict["resolution"] == "UNRESOLVED":
+                    resolution_columns = st.columns(4)
+                    for column, resolution, label in zip(
+                        resolution_columns,
+                        ("KEEP_A", "KEEP_B", "KEEP_BOTH", "UNRESOLVED"),
+                        ("Keep A", "Keep B", "Keep both as context", "Mark unresolved"),
+                    ):
+                        with column:
+                            if st.button(
+                                label,
+                                key=f"resolve_{conflict['conflict_id']}_{resolution}",
+                            ):
+                                try:
+                                    resolve_conflict(user_role, conflict["conflict_id"], resolution)
+                                except (PermissionError, ValueError) as exc:
+                                    st.error(f"Could not save conflict resolution: {exc}")
+                                else:
+                                    st.session_state["ui_flash_toast"] = (
+                                        "Conflict resolution and audit event saved."
+                                    )
+                                    st.rerun()
+                else:
+                    st.success(
+                        f"Recorded resolution: {conflict['resolution'].replace('_', ' ').title()}."
+                    )
+    else:
+        empty_state("No unresolved conflicts are currently detected.")
+
+    gaps = get_gap_records(user_role, PROJECT_ID)
+    if gaps:
+        st.markdown("**Open evidence gaps**")
+        for gap in gaps:
+            with st.container(border=True):
+                st.markdown(f"**{gap['gap_type'].replace('_', ' ').title()}**")
+                st.write(gap["claim_text"] or gap["subject"] or "Related claim unavailable.")
+                if gap["related_claim_id"]:
+                    for evidence in get_claim_evidence(user_role, gap["related_claim_id"]):
+                        st.caption(
+                            f"{evidence['file_name']} · "
+                            f"{evidence['reference_location'] or 'Source location unavailable'}"
+                        )
+                        st.write(evidence["excerpt"])
+    else:
+        empty_state("No open evidence gaps are currently detected.")
+
 st.subheader("Candidate claims")
-st.caption(
-    "Multiple sources means two or more files are linked; the system has not checked whether "
-    "their statements agree."
-)
+st.caption("Corroborated means comparable statements agree after normalization; source count alone is not proof.")
 if not claims:
     empty_state(
         "No claims are available for this role yet.",

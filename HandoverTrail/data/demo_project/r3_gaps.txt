@@ -1,0 +1,3 @@
+Task T-204 is open and has no owner.
+Decision: Use Redis for webhook idempotency; date and rationale are not recorded.
+Risk: Retry storm may overload the API; mitigation is not recorded.
