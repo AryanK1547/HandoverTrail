@@ -46,3 +46,12 @@
 - Incoming cannot read a public interview source before every claim linked to it is approved. Approval changes the corresponding answered gap to `resolved`.
 - Plain-language concepts: additive migrations preserve the old question table; a source ID filter limits extraction to the interview source; exact user assignment prevents another Departing user from reading the question; approval gating keeps public interview data out of Incoming's view until review.
 - Verification: full suite **32 passed**; compileall, `git diff --check`, and AppTest for Reviewer and Departing views passed. Provider functions are fake/fail-fast in tests; no real calls.
+
+## R3-4 claim editing and version history
+
+- Work branch: `r3/claim-history`, based on R3-3; not pushed.
+- Admin/Reviewer can edit a claim only with a reason. The replaced text is appended to `claim_versions` with a sequential version number, editor, reason, and timestamp. The current text is updated and requires review again.
+- The Review Claims page exposes an edit form and History expander. The existing approve/reject actions accept edited-pending-review claims.
+- Editing an approved claim removes it from Incoming until it is approved again. Edit review/audit rows are written, and conflict/gap validation is recalculated from the new text.
+- Plain-language concepts: the version table is append-only, meaning code adds older text but never overwrites it; version numbers show the sequence; the reason records why the text changed; the review status prevents an edit from silently remaining trusted.
+- Verification: full suite **34 passed**; compileall, `git diff --check`, and Review page AppTest passed. Tests use synthetic data only and no provider calls.

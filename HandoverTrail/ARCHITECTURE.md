@@ -8,7 +8,7 @@
 4. The Review Claims page sends public evidence to the provider gateway, which masks contact, credential-like, and long ID-number-like values before sending it to Gemini or the pinned OpenRouter model. Restricted evidence is never sent to either provider and is processed only by the local heuristic.
 5. The local conflict detector extracts claim slots, normalizes names and dates, compares claims from separate sources, and records task/decision/risk/single-source gaps. The validator marks claims corroborated only when comparable slot values agree; source count alone is insufficient.
 6. Reviewers turn open gaps into draft exit-interview questions. The assigned Departing identity submits an answer that is stored as a timestamped `interview` source, chunked, and extracted from that source only into pending claims.
-7. The review functions authorize approve/reject actions, write review and audit rows, and resolve an interview gap after a linked interview claim is approved.
+7. Claim edits append the previous text, editor, edit reason, and time to `claim_versions`, set the claim to edited-pending-review, and write review/audit rows. Approving a linked interview claim resolves its gap.
 8. Retrieval filters sources, chunks, claims, and claim evidence before the pages render them. The Incoming role sees interview sources only when all claims linked to that answer are approved; other claims are visible only when approved and every linked source is public.
 
 ## SQLite schema
@@ -24,7 +24,8 @@
 - `claim_slots`, `claim_conflicts`, and `gaps`: derived slot values, conflict/corroboration comparisons, and open missing-evidence records.
 - `questions` and `answers`: assigned draft/sent questions and timestamped answer records linked to their interview source.
 - `user_role_assignments`: additive role assignments, including the demo Departing identity without rebuilding the legacy `users.role` constraint.
-- Round 3 scaffolding not yet active: `claim_versions`, `handover_versions`, and `handover_acks`.
+- `claim_versions`: append-only snapshots of text replaced during claim edits, with editor, reason, and timestamp.
+- Round 3 scaffolding not yet active: `handover_versions` and `handover_acks`.
 
 `HANDOVERTRAIL_DB` overrides the default `<project directory>/handovertrail.db` path. `bootstrap()` uses `CREATE TABLE IF NOT EXISTS` and additive column migrations, so it can initialize a fresh database or upgrade the known older schema without replacing the database file.
 
