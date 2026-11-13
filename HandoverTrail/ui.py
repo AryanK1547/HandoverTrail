@@ -288,7 +288,7 @@ def badge_html(label: object, variant: str = "neutral", icon: str | None = None)
 
 def trust_badge(status: str) -> str:
     labels = {
-        "VERIFIED": ("Multiple sources — agreement not checked", "success"),
+        "VERIFIED": ("Corroborated — statements agree", "success"),
         "SINGLE_SOURCE": ("Single source", "warning"),
         "MISSING_EVIDENCE": ("Missing evidence", "danger"),
         "CONFLICTING": ("Conflicting", "conflict"),
@@ -346,10 +346,11 @@ def glossary_popover() -> None:
     with st.popover("Glossary"):
         st.markdown(
             """
-            - **Multiple sources — agreement not checked:** linked to at least two files; their statements have not been compared.
+            - **Corroborated:** comparable claim slots agree across different sources after normalization.
             - **Single source:** supported by one file.
             - **Missing evidence:** no readable evidence is linked.
-            - **Conflicting:** the system has marked incompatible information.
+            - **Conflicting:** the same subject and attribute have incompatible values.
+            - **Possible conflict:** similar subjects have different values and need a human check.
             - **Public:** visible to the Incoming demo role.
             - **Restricted:** visible only to Admin and Reviewer demo roles.
             """
