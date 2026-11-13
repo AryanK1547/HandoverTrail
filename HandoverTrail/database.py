@@ -60,6 +60,7 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         file_type TEXT NOT NULL,
         uploaded_at TEXT NOT NULL,
         sensitivity TEXT NOT NULL DEFAULT 'restricted' CHECK(sensitivity IN ('public', 'restricted')),
+        source_type TEXT NOT NULL DEFAULT 'source',
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """)
@@ -131,12 +132,115 @@ def bootstrap(db_path: str | Path | None = None) -> None:
     );
     """)
 
+    # Round 3 schema scaffolding. These tables remain empty until their features are implemented.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS claim_versions (
+        id TEXT PRIMARY KEY,
+        claim_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        editor_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (claim_id, version),
+        FOREIGN KEY (claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE,
+        FOREIGN KEY (editor_id) REFERENCES users(user_id)
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS claim_slots (
+        claim_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        attribute TEXT NOT NULL,
+        value TEXT NOT NULL,
+        normalized_value TEXT NOT NULL,
+        PRIMARY KEY (claim_id, subject, attribute, value),
+        FOREIGN KEY (claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS gaps (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        gap_type TEXT NOT NULL,
+        subject TEXT,
+        related_claim_id TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        FOREIGN KEY (related_claim_id) REFERENCES claims(claim_id) ON DELETE SET NULL
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS questions (
+        id TEXT PRIMARY KEY,
+        gap_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        assigned_role TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (gap_id) REFERENCES gaps(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by) REFERENCES users(user_id)
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS answers (
+        id TEXT PRIMARY KEY,
+        question_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE,
+        FOREIGN KEY (author_id) REFERENCES users(user_id),
+        FOREIGN KEY (source_id) REFERENCES sources(source_id)
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS handover_versions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        released_by TEXT NOT NULL,
+        released_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE (project_id, version),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        FOREIGN KEY (released_by) REFERENCES users(user_id)
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS handover_acks (
+        id TEXT PRIMARY KEY,
+        handover_version_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        acknowledged_at TEXT NOT NULL,
+        UNIQUE (handover_version_id, user_id),
+        FOREIGN KEY (handover_version_id) REFERENCES handover_versions(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(user_id)
+    );
+    """)
+    # The legacy users.role CHECK is intentionally unchanged; this extension supports new roles additively.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_role_assignments (
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('Admin', 'Reviewer', 'Incoming', 'Departing')),
+        PRIMARY KEY (user_id, role),
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    );
+    """)
+
     source_columns = {
         row["name"] for row in cursor.execute("PRAGMA table_info(sources)").fetchall()
     }
     if "sensitivity" not in source_columns:
         cursor.execute(
             "ALTER TABLE sources ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'restricted'"
+        )
+    if "source_type" not in source_columns:
+        cursor.execute(
+            "ALTER TABLE sources ADD COLUMN source_type TEXT NOT NULL DEFAULT 'source'"
         )
     claim_columns = {
         row["name"] for row in cursor.execute("PRAGMA table_info(claims)").fetchall()

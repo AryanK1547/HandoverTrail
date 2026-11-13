@@ -89,6 +89,71 @@ def _create_claim(
     conn.close()
 
 
+def test_round3_schema_migration_is_additive_and_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "legacy-handovertrail.db"
+    monkeypatch.setenv("HANDOVERTRAIL_DB", str(db_path))
+    conn = database.get_connection()
+    conn.executescript("""
+        CREATE TABLE projects (
+            project_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE sources (
+            source_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        );
+        INSERT INTO projects
+            (project_id, name, description, created_at, updated_at)
+        VALUES ('PROJ-LEGACY', 'Legacy project', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+        INSERT INTO sources
+            (source_id, project_id, file_name, file_type, uploaded_at)
+        VALUES ('SRC-LEGACY', 'PROJ-LEGACY', 'legacy.txt', 'TXT', CURRENT_TIMESTAMP);
+    """)
+    conn.close()
+
+    database.bootstrap()
+    database.bootstrap()
+
+    conn = database.get_connection()
+    source = conn.execute(
+        "SELECT source_id, file_name, sensitivity, source_type FROM sources"
+    ).fetchone()
+    assert tuple(source) == ("SRC-LEGACY", "legacy.txt", "restricted", "source")
+
+    round3_tables = {
+        "claim_versions",
+        "claim_slots",
+        "gaps",
+        "questions",
+        "answers",
+        "handover_versions",
+        "handover_acks",
+        "user_role_assignments",
+    }
+    table_names = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    assert round3_tables <= table_names
+    for table_name in round3_tables:
+        assert conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM users WHERE role = 'Reviewer'"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
 def test_cold_start_claims_are_labeled_cached_demo(isolated_db: Path) -> None:
     claims = retrieval.get_visible_claims("Reviewer", "PROJ-DEMO-001")
 
