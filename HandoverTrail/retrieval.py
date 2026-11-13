@@ -1,5 +1,14 @@
 from permissions import can_view_sensitivity, normalize_role
 from database import get_connection
+from masking import mask_sensitive_text
+
+
+def _mask_row_values(row, keys: tuple[str, ...]) -> dict:
+    masked_row = dict(row)
+    for key in keys:
+        if masked_row.get(key) is not None:
+            masked_row[key] = mask_sensitive_text(masked_row[key])[0]
+    return masked_row
 
 
 def _claim_has_only_visible_evidence(conn, role: str, claim_id: str) -> bool:
@@ -24,7 +33,10 @@ def get_visible_sources(role: str, project_id: str) -> list:
             WHERE project_id = ?
             ORDER BY file_name
         """, (project_id,)).fetchall()
-        return [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        visible = [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        if normalize_role(role) == "Incoming":
+            return [_mask_row_values(row, ("file_name",)) for row in visible]
+        return visible
     finally:
         conn.close()
 
@@ -40,7 +52,13 @@ def get_visible_evidence_chunks(role: str, project_id: str) -> list:
             WHERE s.project_id = ?
             ORDER BY s.file_name, e.chunk_index
         """, (project_id,)).fetchall()
-        return [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        visible = [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        if normalize_role(role) == "Incoming":
+            return [
+                _mask_row_values(row, ("excerpt", "file_name", "reference_location"))
+                for row in visible
+            ]
+        return visible
     finally:
         conn.close()
 
@@ -61,7 +79,10 @@ def get_visible_claims(role: str, project_id: str) -> list:
             if is_incoming and claim["review_status"] != "APPROVED":
                 continue
             if _claim_has_only_visible_evidence(conn, role, claim["claim_id"]):
-                visible_claims.append(claim)
+                if is_incoming:
+                    visible_claims.append(_mask_row_values(claim, ("claim_text",)))
+                else:
+                    visible_claims.append(claim)
         return visible_claims
     finally:
         conn.close()
@@ -89,7 +110,13 @@ def get_claim_evidence(role: str, claim_id: str) -> list:
             WHERE ce.claim_id = ?
             ORDER BY s.file_name, e.chunk_index
         """, (claim_id,)).fetchall()
-        return [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        visible = [row for row in rows if can_view_sensitivity(role, row["sensitivity"])]
+        if normalize_role(role) == "Incoming":
+            return [
+                _mask_row_values(row, ("excerpt", "file_name", "reference_location"))
+                for row in visible
+            ]
+        return visible
     finally:
         conn.close()
 

@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 import database
+import extractor
+import masking
 import permissions
+import provider_gateway
 import retrieval
 import source_parser
 import validator
@@ -152,6 +155,252 @@ def test_round3_schema_migration_is_additive_and_idempotent(
         "SELECT COUNT(*) FROM users WHERE role = 'Reviewer'"
     ).fetchone()[0] == 1
     conn.close()
+
+
+def test_mask_sensitive_text_redacts_contacts_credentials_and_ids() -> None:
+    original = (
+        "Contact alice@example.test or +91 98765 43210; "
+        "token sk-test-abcdefghijklmnop; ID 123456789012."
+    )
+
+    masked, count = masking.mask_sensitive_text(original)
+
+    assert count == 4
+    assert "alice@example.test" not in masked
+    assert "+91 98765 43210" not in masked
+    assert "sk-test-abcdefghijklmnop" not in masked
+    assert "123456789012" not in masked
+    assert "[REDACTED:email]" in masked
+    assert "[REDACTED:phone]" in masked
+    assert "[REDACTED:secret]" in masked
+    assert "[REDACTED:id]" in masked
+
+
+def test_mask_sensitive_text_preserves_ordinary_text() -> None:
+    text = "The project uses SQLite, and release 3 ships on 15 Nov."
+
+    assert masking.mask_sensitive_text(text) == (text, 0)
+
+
+def test_provider_gateway_masks_payload_and_rejects_restricted_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_values = (
+        "alice@example.test",
+        "+91 98765 43210",
+        "sk-test-abcdefghijklmnop",
+        "AIzaSySyntheticKeyValue1234567890",
+        "123456789012",
+    )
+    captured_prompts = []
+
+    def fake_gemini(api_key: str, model: str, prompt: str) -> str:
+        captured_prompts.append(prompt)
+        return '{"claims":[]}'
+
+    def fake_openrouter(api_key: str, model: str, prompt: str) -> str:
+        captured_prompts.append(prompt)
+        return '{"claims":[]}'
+
+    monkeypatch.setattr(provider_gateway, "_invoke_gemini", fake_gemini)
+    monkeypatch.setattr(provider_gateway, "_invoke_openrouter", fake_openrouter)
+    public_chunk = {
+        "evidence_id": "EVD-PUBLIC",
+        "file_name": f"{private_values[0]}.txt",
+        "reference_location": private_values[1],
+        "excerpt": " ".join(private_values[2:]),
+        "sensitivity": "public",
+    }
+
+    gemini_response = provider_gateway.generate_gemini_response(
+        "test-key", "test-model", [public_chunk]
+    )
+    openrouter_response = provider_gateway.generate_openrouter_response(
+        "test-key", "test-model", [public_chunk]
+    )
+
+    assert gemini_response.masked_values == 5
+    assert openrouter_response.masked_values == 5
+    assert len(captured_prompts) == 2
+    for prompt in captured_prompts:
+        assert all(value not in prompt for value in private_values)
+        assert prompt.count("[REDACTED:") == 5
+    with pytest.raises(provider_gateway.RestrictedEvidenceError):
+        provider_gateway.build_provider_payload([
+            {**public_chunk, "sensitivity": "restricted"}
+        ])
+
+
+def test_openrouter_http_request_uses_fake_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_headers = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({
+                "choices": [{"message": {"content": "synthetic response"}}]
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured_headers.append(request.get_header("Authorization"))
+        return FakeResponse()
+
+    monkeypatch.setattr(provider_gateway.urllib.request, "urlopen", fake_urlopen)
+
+    response = provider_gateway._invoke_openrouter(
+        "synthetic-test-key",
+        "test-model",
+        "safe synthetic prompt",
+    )
+
+    assert response == "synthetic response"
+    assert captured_headers == ["Bearer synthetic-test-key"]
+
+
+def test_extraction_sends_only_public_chunks_and_uses_local_restricted_heuristic(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_project()
+    public_evidence = _create_source(
+        "SRC-PUBLIC-AI",
+        "public-ai.txt",
+        "public",
+        "Decision: SQLite is used. Contact alice@example.test.",
+    )
+    restricted_evidence = _create_source(
+        "SRC-RESTRICTED-AI",
+        "restricted-ai.txt",
+        "restricted",
+        "Task-77 owner is Priya; synthetic credential FAKE-R3-SECRET-0001; "
+        "phone +91 98765 43210.",
+    )
+    captured_prompts = []
+
+    def fake_gemini(api_key: str, model: str, prompt: str) -> str:
+        captured_prompts.append(prompt)
+        return json.dumps({
+            "claims": [{
+                "claim_text": "The project uses SQLite.",
+                "claim_type": "Decision",
+                "evidence_ids": [public_evidence],
+            }]
+        })
+
+    monkeypatch.setattr(provider_gateway, "_invoke_gemini", fake_gemini)
+
+    result = extractor.extract_claims_from_evidence(
+        PROJECT_ID,
+        api_key="synthetic-test-key",
+    )
+
+    assert result["status"] == "success"
+    assert result["method"] == "Gemini API + local restricted-source heuristic"
+    assert result["masked_values"] == 1
+    assert len(captured_prompts) == 1
+    assert "alice@example.test" not in captured_prompts[0]
+    assert "Task-77 owner is Priya" not in captured_prompts[0]
+    assert "FAKE-R3-SECRET-0001" not in captured_prompts[0]
+    assert "+91 98765 43210" not in captured_prompts[0]
+    assert "[REDACTED:email]" in captured_prompts[0]
+
+    conn = database.get_connection()
+    claims_by_method = {
+        row["claim_source"]: row["claim_id"]
+        for row in conn.execute(
+            "SELECT claim_id, claim_source FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    }
+    assert "Gemini API" in claims_by_method
+    assert "Local heuristic (restricted sources)" in claims_by_method
+    restricted_claim_id = claims_by_method["Local heuristic (restricted sources)"]
+    linked_source = conn.execute(
+        """
+        SELECT s.sensitivity
+        FROM claim_evidence ce
+        JOIN evidence_chunks e ON e.evidence_id = ce.evidence_id
+        JOIN sources s ON s.source_id = e.source_id
+        WHERE ce.claim_id = ?
+        """,
+        (restricted_claim_id,),
+    ).fetchone()
+    conn.close()
+    assert linked_source["sensitivity"] == "restricted"
+
+
+def test_provider_failure_uses_labeled_local_fallback(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_project()
+    _create_source(
+        "SRC-PROVIDER-FAILURE",
+        "failure.txt",
+        "public",
+        "The team confirmed the project uses SQLite. Contact alice@example.test.",
+    )
+
+    def failing_gemini(api_key: str, model: str, prompt: str) -> str:
+        raise RuntimeError("synthetic provider failure")
+
+    monkeypatch.setattr(provider_gateway, "_invoke_gemini", failing_gemini)
+
+    result = extractor.extract_claims_from_evidence(
+        PROJECT_ID,
+        api_key="synthetic-test-key",
+    )
+
+    assert result["status"] == "success"
+    assert result["method"] == "Universal Keyword Fallback"
+    assert result["masked_values"] == 1
+    conn = database.get_connection()
+    methods = {
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT claim_source FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    }
+    conn.close()
+    assert methods == {"Universal Keyword Fallback"}, result
+
+
+def test_incoming_reads_mask_claims_and_public_evidence(isolated_db: Path) -> None:
+    _create_project()
+    evidence_id = _create_source(
+        "SRC-MASKED-INCOMING",
+        "notes.txt",
+        "public",
+        "Contact alice@example.test or +91 98765 43210.",
+    )
+    _create_claim("CLM-MASKED-INCOMING", [evidence_id], "APPROVED")
+    conn = database.get_connection()
+    conn.execute(
+        "UPDATE claims SET claim_text = ? WHERE claim_id = ?",
+        ("Contact alice@example.test", "CLM-MASKED-INCOMING"),
+    )
+    conn.commit()
+    conn.close()
+
+    visible_claim = retrieval.get_visible_claims("Incoming", PROJECT_ID)[0]
+    visible_evidence = retrieval.get_claim_evidence(
+        "Incoming", "CLM-MASKED-INCOMING"
+    )[0]
+
+    assert "alice@example.test" not in visible_claim["claim_text"]
+    assert "[REDACTED:email]" in visible_claim["claim_text"]
+    assert "alice@example.test" not in visible_evidence["excerpt"]
+    assert "+91 98765 43210" not in visible_evidence["excerpt"]
+    assert "[REDACTED:email]" in visible_evidence["excerpt"]
+    assert "[REDACTED:phone]" in visible_evidence["excerpt"]
 
 
 def test_cold_start_claims_are_labeled_cached_demo(isolated_db: Path) -> None:

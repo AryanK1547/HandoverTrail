@@ -62,7 +62,10 @@ with col1:
             progress_callback=update_extraction_progress,
         )
         if res.get("status") == "success":
-            st.success(f"Generated {res['claims_created']} claims using [{res['method']}]!")
+            st.success(
+                f"Generated {res['claims_created']} claims using [{res['method']}]. "
+                f"{res.get('masked_values', 0)} values masked before provider calls."
+            )
             if res.get("fallback_reason"):
                 if res["method"] == "Universal Keyword Fallback":
                     st.warning(f"AI providers unavailable. {res['fallback_reason']}")
@@ -109,7 +112,11 @@ if claims:
         trust_label = trust_labels.get(c["trust_status"], "Unknown")
         trust_color = "🟢" if c["trust_status"] == "VERIFIED" else "🟡" if c["trust_status"] == "SINGLE_SOURCE" else "🔴"
         review_icon = "⏳" if c["review_status"] == "PENDING" else "✅" if c["review_status"] == "APPROVED" else "❌"
-        source_label = " [Cached demo claim]" if c["claim_source"] == "cached_demo" else ""
+        source_label = (
+            " [Cached demo claim]"
+            if c["claim_source"] == "cached_demo"
+            else f" [Method: {c['claim_source']}]"
+        )
 
         with st.expander(
             f"{review_icon} {trust_color} [{trust_label}] [{c['claim_type']}]"

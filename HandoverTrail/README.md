@@ -42,7 +42,7 @@ Optional Streamlit secrets are named `GEMINI_API_KEY` and `OPENROUTER_API_KEY`. 
 
 Gemini uses `gemini-3.6-flash`. If Gemini is unavailable, the configured OpenRouter fallback is `deepseek/deepseek-v4.1-flash-1017`. If neither provider can be used, the app labels its local heuristic fallback. AI extraction is limited to three runs per browser session.
 
-Extraction prompts may include excerpts from restricted sources. Sensitivity filtering happens when data is read for display; it does not prevent restricted text from being sent to an AI provider during extraction. Do not use the demo role selector as a security boundary.
+Only public-sensitivity excerpts can be sent to Gemini or OpenRouter. Before a provider call, common email addresses, phone numbers, credential-like tokens, and long numeric ID patterns are masked. Restricted excerpts stay local and use the heuristic extractor. Incoming display also masks those common patterns. Pattern matching can miss unusual or unknown sensitive formats; do not send real sensitive data, and do not use the demo role selector as a security boundary.
 
 ## Roles and evidence labels
 
