@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ import provider_gateway
 import retrieval
 import source_parser
 import validator
+import workspace
 
 
 PROJECT_ID = "PROJ-QA-001"
@@ -164,6 +166,7 @@ def test_round3_schema_migration_is_additive_and_idempotent(
     round3_tables = {
         "claim_versions",
         "claim_slots",
+        "extraction_runs",
         "claim_conflicts",
         "gaps",
         "questions",
@@ -184,6 +187,10 @@ def test_round3_schema_migration_is_additive_and_idempotent(
         row["name"] for row in conn.execute("PRAGMA table_info(questions)")
     }
     assert "assigned_user_id" in question_columns
+    claim_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(claims)")
+    }
+    assert {"validated_at", "extraction_key"} <= claim_columns
     assert conn.execute(
         """
         SELECT COUNT(*) FROM user_role_assignments
@@ -373,6 +380,72 @@ def test_extraction_sends_only_public_chunks_and_uses_local_restricted_heuristic
     ).fetchone()
     conn.close()
     assert linked_source["sensitivity"] == "restricted"
+    latest_run = extractor.get_latest_extraction_run(PROJECT_ID)
+    assert latest_run["status"] == "success"
+    assert latest_run["method"] == result["method"]
+    assert latest_run["claims_created"] == result["claims_created"]
+    assert set(latest_run["source_ids"]) == {"SRC-PUBLIC-AI", "SRC-RESTRICTED-AI"}
+
+    approved_claim_id = claims_by_method["Gemini API"]
+    permissions.perform_claim_review("Reviewer", approved_claim_id, "APPROVED")
+    repeated = extractor.extract_claims_from_evidence(
+        PROJECT_ID,
+        api_key="synthetic-test-key",
+    )
+    conn = database.get_connection()
+    claim_count = conn.execute(
+        "SELECT COUNT(*) FROM claims WHERE project_id = ?",
+        (PROJECT_ID,),
+    ).fetchone()[0]
+    preserved_status = conn.execute(
+        "SELECT review_status FROM claims WHERE claim_id = ?",
+        (approved_claim_id,),
+    ).fetchone()[0]
+    conn.close()
+    assert repeated["claims_created"] == 0
+    assert claim_count == 2
+    assert preserved_status == "APPROVED"
+    assert extractor.get_latest_extraction_run(PROJECT_ID)["claims_created"] == 0
+
+
+def test_oversized_provider_payload_is_not_sent_and_is_labeled(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_project()
+    _create_source(
+        "SRC-LARGE-PUBLIC",
+        "large.txt",
+        "public",
+        "Decision: " + ("synthetic " * 9000),
+    )
+
+    def unexpected_provider_call(*_args, **_kwargs):
+        raise AssertionError("Oversized evidence must not be sent to a provider.")
+
+    monkeypatch.setattr(provider_gateway, "_invoke_gemini", unexpected_provider_call)
+    monkeypatch.setattr(provider_gateway, "_invoke_openrouter", unexpected_provider_call)
+
+    result = extractor.extract_claims_from_evidence(
+        PROJECT_ID,
+        api_key="synthetic-test-key",
+        openrouter_api_key="synthetic-openrouter-key",
+    )
+
+    assert result["status"] == "success"
+    assert result["method"] == "Universal Keyword Fallback"
+    assert "80,000-character provider limit" in result["fallback_reason"]
+
+
+def test_provider_claim_markdown_is_normalized_to_one_readable_line() -> None:
+    response = """```JSON
+    {"claims":[{"claim_text":"## **The project uses `SQLite`.**",
+    "claim_type":"Decision","evidence_ids":["EVD-1"]}]}
+    ```"""
+
+    claims = extractor._parse_claims(response, {"EVD-1"})
+
+    assert list(claims) == ["The project uses SQLite."]
 
 
 def test_provider_failure_uses_labeled_local_fallback(
@@ -410,6 +483,38 @@ def test_provider_failure_uses_labeled_local_fallback(
     }
     conn.close()
     assert methods == {"Universal Keyword Fallback"}, result
+
+
+def test_keyword_fallback_keeps_relevant_source_statements(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    _create_source(
+        "SRC-RELEVANT-FALLBACK",
+        "brief.md",
+        "restricted",
+        "The database report lists five tables.\n"
+        "The team decided to use PostgreSQL.\n"
+        "Maya owns the data migration.",
+    )
+
+    result = extractor.extract_claims_from_evidence(PROJECT_ID)
+
+    assert result["status"] == "success"
+    assert result["method"] == "Universal Keyword Fallback"
+    conn = database.get_connection()
+    claims = {
+        (row["claim_text"], row["claim_type"])
+        for row in conn.execute(
+            "SELECT claim_text, claim_type FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    }
+    conn.close()
+    assert claims == {
+        ("The team decided to use PostgreSQL.", "Decision"),
+        ("Maya owns the data migration.", "Owner"),
+    }
 
 
 def test_incoming_reads_mask_claims_and_public_evidence(isolated_db: Path) -> None:
@@ -660,6 +765,13 @@ def test_upload_filename_is_sanitized(isolated_db: Path, tmp_path: Path, monkeyp
     assert path == upload_root / PROJECT_ID / "x.txt"
     assert path.read_bytes() == b"Safe content"
     assert replaced is False
+    markdown_path, markdown_replaced = source_parser.persist_uploaded_file(
+        PROJECT_ID, "../../brief.md", b"# Project brief"
+    )
+    assert source_parser.sanitize_upload_filename("../../brief.md") == "brief.md"
+    assert markdown_path == upload_root / PROJECT_ID / "brief.md"
+    assert markdown_path.read_bytes() == b"# Project brief"
+    assert markdown_replaced is False
 
 
 def test_empty_upload_is_rejected(isolated_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -710,6 +822,21 @@ def test_parser_decodes_utf8_with_bom(isolated_db: Path, tmp_path: Path, monkeyp
     assert excerpts == ["café"]
 
 
+def test_parser_accepts_markdown_upload(
+    isolated_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    excerpts = _parse_upload(
+        tmp_path,
+        monkeypatch,
+        "project.md",
+        b"# Project brief\nRegistration closes 5 December.\nThe project owner is Alex Chen.\n",
+    )
+
+    assert excerpts == [
+        "# Project brief\nRegistration closes 5 December.\nThe project owner is Alex Chen."
+    ]
+
+
 def test_parser_falls_back_to_latin1(isolated_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     excerpts = _parse_upload(tmp_path, monkeypatch, "latin1.txt", b"caf\xe9".decode("latin-1").encode("latin-1"))
 
@@ -743,19 +870,130 @@ def test_validator_trust_status_thresholds(isolated_db: Path) -> None:
     assert validator.validate_project_claims("Reviewer", PROJECT_ID) == 3
 
     conn = database.get_connection()
-    statuses = {
-        row["claim_id"]: row["trust_status"]
+    results = {
+        row["claim_id"]: (row["trust_status"], row["validated_at"])
         for row in conn.execute(
-            "SELECT claim_id, trust_status FROM claims WHERE project_id = ?",
+            "SELECT claim_id, trust_status, validated_at FROM claims WHERE project_id = ?",
             (PROJECT_ID,),
         )
     }
     conn.close()
-    assert statuses == {
+    assert {claim_id: result[0] for claim_id, result in results.items()} == {
         "CLM-ZERO": "MISSING_EVIDENCE",
         "CLM-ONE": "SINGLE_SOURCE",
         "CLM-TWO": "SINGLE_SOURCE",
     }
+    assert all(validated_at for _status, validated_at in results.values())
+
+
+def test_upload_workspaces_are_distinct_stable_and_empty(isolated_db: Path) -> None:
+    first_token = "a" * 32
+    second_token = "b" * 32
+
+    first_project = workspace.ensure_upload_workspace(first_token)
+    second_project = workspace.ensure_upload_workspace(second_token)
+    repeated_first_project = workspace.ensure_upload_workspace(first_token)
+
+    assert first_project == f"PROJ-UPLOAD-{first_token.upper()}"
+    assert second_project != first_project
+    assert repeated_first_project == first_project
+    assert workspace.project_id_for_token("demo") == database.DEMO_PROJECT_ID
+    with pytest.raises(ValueError, match="workspace link is invalid"):
+        workspace.project_id_for_token("../invalid")
+
+    conn = database.get_connection()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sources WHERE project_id IN (?, ?)",
+        (first_project, second_project),
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM projects WHERE project_id = ?",
+        (first_project,),
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_active_workspace_is_restored_when_navigation_drops_query_parameter(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "d" * 32
+    query_params = {}
+    session_state = {workspace.ACTIVE_WORKSPACE_SESSION_KEY: token}
+    monkeypatch.setattr(
+        workspace,
+        "st",
+        SimpleNamespace(query_params=query_params, session_state=session_state),
+    )
+
+    assert workspace.get_active_project_id() == f"PROJ-UPLOAD-{token.upper()}"
+    assert query_params[workspace.WORKSPACE_QUERY_PARAM] == token
+
+
+def test_activating_demo_clears_restored_upload_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "e" * 32
+    query_params = {workspace.WORKSPACE_QUERY_PARAM: token}
+    session_state = {workspace.ACTIVE_WORKSPACE_SESSION_KEY: token}
+    monkeypatch.setattr(
+        workspace,
+        "st",
+        SimpleNamespace(query_params=query_params, session_state=session_state),
+    )
+
+    assert workspace.activate_demo_workspace() == database.DEMO_PROJECT_ID
+    assert workspace.WORKSPACE_QUERY_PARAM not in query_params
+    assert workspace.ACTIVE_WORKSPACE_SESSION_KEY not in session_state
+
+
+def test_upload_workspace_extraction_never_reads_cached_demo_evidence(
+    isolated_db: Path,
+) -> None:
+    token = "c" * 32
+    upload_project = workspace.ensure_upload_workspace(token)
+    evidence_id = "EVD-UPLOAD-ONLY"
+    conn = database.get_connection()
+    conn.execute(
+        """
+        INSERT INTO sources
+            (source_id, project_id, file_name, file_type, uploaded_at, sensitivity, source_type)
+        VALUES ('SRC-UPLOAD-ONLY', ?, 'custom.txt', 'TXT', CURRENT_TIMESTAMP, 'public', 'upload')
+        """,
+        (upload_project,),
+    )
+    conn.execute(
+        """
+        INSERT INTO evidence_chunks
+            (evidence_id, source_id, chunk_index, excerpt, reference_location, created_at)
+        VALUES (?, 'SRC-UPLOAD-ONLY', 0, 'The team confirmed the custom app uses SQLite.',
+                'custom.txt [Lines 1-1]', CURRENT_TIMESTAMP)
+        """,
+        (evidence_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    result = extractor.extract_claims_from_evidence(upload_project)
+
+    assert result["status"] == "success"
+    assert result["claims_created"] == 1
+    claims = retrieval.get_visible_claims("Reviewer", upload_project)
+    assert len(claims) == 1
+    assert claims[0]["claim_source"] == "Universal Keyword Fallback"
+    assert "custom app" in claims[0]["claim_text"]
+    conn = database.get_connection()
+    linked_source = conn.execute(
+        """
+        SELECT s.project_id FROM claim_evidence ce
+        JOIN evidence_chunks e ON e.evidence_id = ce.evidence_id
+        JOIN sources s ON s.source_id = e.source_id
+        WHERE ce.claim_id = ?
+        """,
+        (claims[0]["claim_id"],),
+    ).fetchone()
+    conn.close()
+    assert linked_source["project_id"] == upload_project
 
 
 def _create_slot_claim(

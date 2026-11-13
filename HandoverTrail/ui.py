@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import html
+import json
 import subprocess
 
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from database import PROJECT_ROOT, get_connection
+from database import DEMO_PROJECT_ID, PROJECT_ROOT, get_connection
 from permissions import normalize_role
 from retrieval import (
     count_hidden_claims,
@@ -15,8 +16,7 @@ from retrieval import (
     get_visible_sources,
 )
 from ui_helpers import render_role_selector
-
-PROJECT_ID = "PROJ-DEMO-001"
+from workspace import get_active_project_id
 
 COLORS = {
     "bg": "#0B1220",
@@ -65,9 +65,9 @@ _BADGE_VARIANTS = {
 }
 
 _ROLE_DESCRIPTIONS = {
-    "Admin": "Can inspect all sources and manage demo reviews.",
+    "Admin": "Can inspect sources and manage claims for the selected workspace.",
     "Reviewer": "Can inspect evidence and approve or reject claims.",
-    "Incoming": "Can read approved claims supported only by public sources.",
+    "Incoming": "Can read the latest reviewer-released handover only.",
     "Departing": "Can answer only interview questions assigned to the demo leaver.",
 }
 
@@ -174,15 +174,18 @@ def apply_theme() -> None:
 
 
 def _dashboard_counts(role: str) -> dict[str, int]:
-    sources = get_visible_sources(role, PROJECT_ID)
-    evidence = get_visible_evidence_chunks(role, PROJECT_ID)
-    claims = get_visible_claims(role, PROJECT_ID)
+    project_id = get_active_project_id()
+    sources = get_visible_sources(role, project_id)
+    evidence = get_visible_evidence_chunks(role, project_id)
+    claims = get_visible_claims(role, project_id)
+    source_count_override = None
+    evidence_count_override = None
     if normalize_role(role) in {"Admin", "Reviewer"}:
         conn = get_connection()
         try:
             open_gaps = conn.execute(
                 "SELECT COUNT(*) FROM gaps WHERE project_id = ? AND status = 'open'",
-                (PROJECT_ID,),
+                (project_id,),
             ).fetchone()[0]
             interview_questions = conn.execute(
                 """
@@ -190,7 +193,7 @@ def _dashboard_counts(role: str) -> dict[str, int]:
                 JOIN gaps g ON g.id = q.gap_id
                 WHERE g.project_id = ? AND q.status IN ('DRAFT', 'SENT')
                 """,
-                (PROJECT_ID,),
+                (project_id,),
             ).fetchone()[0]
         finally:
             conn.close()
@@ -208,17 +211,63 @@ def _dashboard_counts(role: str) -> dict[str, int]:
             conn.close()
     else:
         open_gaps = interview_questions = 0
+    released_claims = None
+    if normalize_role(role) == "Incoming":
+        conn = get_connection()
+        try:
+            release = conn.execute(
+                """
+                SELECT snapshot_json FROM handover_versions
+                WHERE project_id = ? ORDER BY version DESC LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            if release:
+                snapshot_claims = json.loads(release["snapshot_json"]).get("claims", [])
+                released_claims = len(snapshot_claims)
+                released_sources = {
+                    evidence["file_name"]
+                    for claim in snapshot_claims
+                    for evidence in claim.get("evidence", [])
+                    if evidence.get("file_name")
+                }
+                released_evidence = {
+                    evidence["evidence_id"]
+                    for claim in snapshot_claims
+                    for evidence in claim.get("evidence", [])
+                }
+                source_count_override = len(released_sources)
+                evidence_count_override = len(released_evidence)
+            else:
+                released_claims = 0
+                source_count_override = 0
+                evidence_count_override = 0
+        finally:
+            conn.close()
+        claims = []
     return {
-        "sources": len(sources),
-        "public_sources": sum(row["sensitivity"] == "public" for row in sources),
-        "restricted_sources": sum(row["sensitivity"] == "restricted" for row in sources),
-        "evidence": len(evidence),
+        "sources": source_count_override if source_count_override is not None else len(sources),
+        "public_sources": (
+            0 if source_count_override is not None else
+            sum(row["sensitivity"] == "public" for row in sources)
+        ),
+        "restricted_sources": (
+            0 if source_count_override is not None else
+            sum(row["sensitivity"] == "restricted" for row in sources)
+        ),
+        "evidence": evidence_count_override if evidence_count_override is not None else len(evidence),
         "claims": len(claims),
         "pending": sum(row["review_status"] == "PENDING" for row in claims),
-        "approved": sum(row["review_status"] == "APPROVED" for row in claims),
-        "hidden": count_hidden_claims(role, PROJECT_ID),
+        "approved": (
+            released_claims
+            if released_claims is not None
+            else sum(row["review_status"] == "APPROVED" for row in claims)
+        ),
+        "hidden": 0 if normalize_role(role) == "Incoming" else count_hidden_claims(role, project_id),
         "open_gaps": open_gaps,
         "interview_questions": interview_questions,
+        "unvalidated": sum(not row["validated_at"] for row in claims),
+        "released": released_claims is not None and released_claims > 0,
     }
 
 
@@ -241,12 +290,17 @@ def _ai_mode() -> str:
 def sidebar_identity() -> str:
     role = render_role_selector()
     role = st.session_state.get("user_role", role or "Admin")
+    project_id = get_active_project_id()
     with st.sidebar:
-        st.markdown("### Demo workspace")
-        st.caption("Demo Project · Team Techtones")
+        if project_id == DEMO_PROJECT_ID:
+            st.markdown("### Synthetic demo")
+            st.caption("Demo Project · Team Techtones")
+        else:
+            st.markdown("### Upload workspace")
+            st.caption(f"Workspace {project_id[-6:]}")
         st.markdown(badge_html(role, variant="primary"), unsafe_allow_html=True)
         st.caption(_ROLE_DESCRIPTIONS.get(role, "Demo role."))
-        st.caption("Data mode · Synthetic demo + local uploads")
+        st.caption("Separate from demo data · workspace follows this URL")
         st.caption(f"AI mode · {_ai_mode()}")
     return role
 
@@ -262,51 +316,107 @@ def _rail_labels(counts: dict[str, int]) -> tuple[str, ...]:
     )
 
 
-def workflow_rail(current_step: int, counts: dict[str, int]) -> None:
-    labels = _rail_labels(counts)
+def workflow_rail(current_step: int, counts: dict[str, int], role: str) -> None:
+    normalized_role = normalize_role(role)
+    if normalized_role == "Incoming":
+        visible_steps = (("Handover", "pages/3_Handover_View.py"),)
+        labels = (f"{counts['approved']} released claims",)
+    elif normalized_role == "Departing":
+        visible_steps = (("Interview", "pages/4_Exit_Interview.py"),)
+        labels = (f"{counts['interview_questions']} assigned questions",)
+    else:
+        visible_steps = _WORKFLOW
+        labels = _rail_labels(counts)
+    query_params = dict(st.query_params)
     with st.container(key="workflow-rail-desktop"):
-        columns = st.columns(len(_WORKFLOW))
+        columns = st.columns(len(visible_steps))
+        current_visible_step = 1 if normalized_role in {"Incoming", "Departing"} else current_step
         for index, (column, (name, page), count) in enumerate(
-            zip(columns, _WORKFLOW, labels),
+            zip(columns, visible_steps, labels),
             start=1,
         ):
             with column:
-                key = "workflow-step-current" if index == current_step else f"workflow-step-{index}"
+                key = (
+                    "workflow-step-current"
+                    if index == current_visible_step
+                    else f"workflow-step-{index}"
+                )
                 with st.container(key=key):
-                    st.page_link(page, label=name)
+                    st.page_link(page, label=name, query_params=query_params)
                     st.caption(count)
     with st.container(key="workflow-rail-mobile"):
-        st.caption(f"Step {current_step} of {len(_WORKFLOW)} · {_WORKFLOW[current_step - 1][0]}")
+        if normalized_role == "Incoming":
+            label = "Handover"
+            step = 1
+            total = 1
+        elif normalized_role == "Departing":
+            label = "Interview"
+            step = 1
+            total = 1
+        else:
+            label = _WORKFLOW[current_step - 1][0]
+            step = current_step
+            total = len(_WORKFLOW)
+        st.caption(f"Step {step} of {total} · {label}")
 
 
 def next_step_banner(counts: dict[str, int], role: str) -> None:
-    if normalize_role(role) == "Departing":
-        message = "Answer your assigned exit-interview questions; other project sources and claims stay hidden."
-    elif counts["sources"] == 0:
-        message = "No sources yet. Load the synthetic demo or add project files in Connect."
-    elif counts["evidence"] == 0:
-        message = f"{counts['sources']} sources are available. Parse them into evidence excerpts in Connect."
-    elif counts["claims"] == 0:
-        message = f"{counts['evidence']} evidence excerpts are ready. Reconstruct claims from Review Claims."
-    elif role == "Incoming":
-        if counts["approved"]:
-            message = f"{counts['approved']} approved claims are available in Handover."
+    normalized_role = normalize_role(role)
+    query_params = dict(st.query_params)
+    if normalized_role == "Incoming":
+        if counts["released"]:
+            st.success(
+                f"The latest reviewer-released snapshot contains {counts['approved']} claims."
+            )
         else:
-            message = "No approved claims are available yet. A Reviewer must approve claims before handover."
+            st.info("No handover has been released yet. Ask a Reviewer to publish one.")
+        st.page_link(
+            "pages/3_Handover_View.py",
+            label="Open released handover",
+            query_params=query_params,
+        )
+        return
+    if normalized_role == "Departing":
+        st.info("Your next step is to answer the questions assigned to you.")
+        st.page_link(
+            "pages/4_Exit_Interview.py",
+            label="Open your exit interview",
+            query_params=query_params,
+        )
+        return
+
+    if counts["sources"] == 0:
+        message, label, page = "No sources are available in this workspace.", "Connect sources", "pages/1_Upload_Sources.py"
+    elif counts["evidence"] == 0:
+        message, label, page = f"{counts['sources']} sources are ready to parse.", "Parse sources", "pages/1_Upload_Sources.py"
+    elif counts["claims"] == 0:
+        message, label, page = f"{counts['evidence']} evidence excerpts are ready for extraction.", "Extract claims", "pages/2_Review_Claims.py"
+    elif counts["unvalidated"]:
+        message, label, page = f"{counts['unvalidated']} claims still need evidence validation.", "Validate claims", "pages/2_Review_Claims.py"
     elif counts["pending"]:
-        message = f"{counts['pending']} claims are waiting for human review."
+        message, label, page = f"{counts['pending']} claims are waiting for human review.", "Review claims", "pages/2_Review_Claims.py"
+    elif counts["open_gaps"]:
+        if counts["interview_questions"]:
+            message = (
+                f"{counts['open_gaps']} evidence gaps remain; "
+                f"{counts['interview_questions']} interview question(s) are already in progress."
+            )
+        else:
+            message = f"{counts['open_gaps']} evidence gaps can be turned into exit-interview questions."
+        label, page = "Continue exit interview", "pages/4_Exit_Interview.py"
     elif counts["approved"]:
-        message = f"{counts['approved']} approved claims are ready in Handover."
+        message, label, page = f"{counts['approved']} approved claims are ready for a handover release.", "Release handover", "pages/3_Handover_View.py"
     else:
-        message = "No claims are ready for handover. Review the claims and evidence."
+        message, label, page = "No claims are ready for handover.", "Review claims", "pages/2_Review_Claims.py"
     st.info(message)
+    st.page_link(page, label=label, query_params=query_params)
 
 
 def page_shell(step: int, title: str, subtitle: str) -> tuple[str, dict[str, int]]:
     apply_theme()
     role = sidebar_identity()
     counts = _dashboard_counts(role)
-    workflow_rail(step, counts)
+    workflow_rail(step, counts, role)
     st.title(title)
     st.markdown(subtitle)
     st.markdown(f"Current role: {badge_html(role, variant='primary')}", unsafe_allow_html=True)
@@ -351,6 +461,12 @@ def sensitivity_badge(sensitivity: str) -> str:
     label = sensitivity.title() if sensitivity in {"public", "restricted"} else "Unknown sensitivity"
     variant = sensitivity if sensitivity in {"public", "restricted"} else "neutral"
     return badge_html(label, variant)
+
+
+def validation_badge(validated_at: str | None) -> str:
+    if validated_at:
+        return badge_html("Evidence checked", "success")
+    return badge_html("Not validated", "warning")
 
 
 def origin_badge(origin: str) -> str:
@@ -421,9 +537,8 @@ def render_stats_for_role(role: str, counts: dict[str, int]) -> None:
         stat_row(
             [
                 ("Available sources", counts["sources"]),
-                ("Visible excerpts", counts["evidence"]),
-                ("Approved claims", counts["approved"]),
-                ("Hidden approved items", counts["hidden"]),
+                ("Released evidence excerpts", counts["evidence"]),
+                ("Claims in latest release", counts["approved"]),
             ]
         )
     else:

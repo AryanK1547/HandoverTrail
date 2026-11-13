@@ -9,6 +9,7 @@ from typing import Any
 from masking import mask_sensitive_text
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+MAX_PROVIDER_EVIDENCE_CHARS = 80_000
 
 try:
     from google import genai
@@ -20,6 +21,10 @@ except ImportError:
 
 class RestrictedEvidenceError(PermissionError):
     """Raised when non-public evidence is about to cross a provider boundary."""
+
+
+class EvidencePayloadTooLargeError(ValueError):
+    """Raised when selected excerpts exceed the explicit provider payload limit."""
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,7 @@ def build_provider_payload(chunks: list[Any]) -> dict[str, Any]:
     evidence_lines = []
     evidence_ids = set()
     masked_values = 0
+    evidence_characters = 0
     for chunk in chunks:
         if str(chunk["sensitivity"]).strip().lower() != "public":
             raise RestrictedEvidenceError(
@@ -59,10 +65,17 @@ def build_provider_payload(chunks: list[Any]) -> dict[str, Any]:
         reference, reference_count = mask_sensitive_text(chunk["reference_location"] or "")
         masked_values += count + filename_count + reference_count
         evidence_ids.add(chunk["evidence_id"])
-        evidence_lines.append(
+        evidence_line = (
             f"[{chunk['evidence_id']}] Source: {file_name} "
             f"({reference})\nText: {excerpt}\n---"
         )
+        evidence_characters += len(evidence_line)
+        if evidence_characters > MAX_PROVIDER_EVIDENCE_CHARS:
+            raise EvidencePayloadTooLargeError(
+                "Selected public evidence exceeds the 80,000-character provider limit. "
+                "Choose fewer/smaller sources; no evidence was sent."
+            )
+        evidence_lines.append(evidence_line)
     return {
         "prompt": _claims_prompt("\n".join(evidence_lines)),
         "evidence_ids": evidence_ids,

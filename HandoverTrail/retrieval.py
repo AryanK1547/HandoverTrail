@@ -87,7 +87,7 @@ def get_visible_claims(role: str, project_id: str) -> list:
     try:
         claims = conn.execute("""
             SELECT claim_id, project_id, claim_text, claim_type, trust_status,
-                   claim_source, review_status, created_at, updated_at
+                   claim_source, review_status, validated_at, created_at, updated_at
             FROM claims
             WHERE project_id = ?
             ORDER BY created_at DESC

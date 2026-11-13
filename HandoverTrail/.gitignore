@@ -11,3 +11,6 @@ data/*.sqlite3
 .streamlit/secrets.toml
 
 .env
+node_modules/
+playwright-report/
+test-results/

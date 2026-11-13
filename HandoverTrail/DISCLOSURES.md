@@ -19,8 +19,15 @@ AI models used inside the product (free-tier APIs):
   fallback extraction.
 - The provider gateway sends only public-sensitivity excerpts, after masking common emails, phone numbers, credential-like tokens, and long numeric ID patterns. Restricted excerpts are kept out of provider prompts and handled only by the local heuristic. Regex masking can miss unusual formats; do not use the demo role selector as authentication or send real sensitive data.
 
+The Round 3 deployed QA run on 13 Nov 2026 did not make a live provider
+request. `gemini-3.6-flash` and
+`deepseek/deepseek-v4.1-flash-1017` are the configured model identifiers
+documented by the application; Phase D did not verify which provider/model
+would answer a live request or whether the Cloud secrets are configured.
+
 Testing note: real provider requests during Round 2 testing were limited to
 five. Round 3 tests use fake providers and make no real provider requests.
+No real provider request was made during the 13 Nov 2026 Phase D browser check.
 
 ## Libraries
 
@@ -29,6 +36,13 @@ Runtime dependencies listed in `requirements.txt`: Streamlit, pandas, and `googl
 Development dependency listed in `requirements-dev.txt`: pytest.
 
 Third-party packages are installed from the pinned versions recorded in `requirements.txt` and `requirements-dev.txt`.
+
+The browser-test dependency `@playwright/test` is pinned in
+`package.json`/`package-lock.json`. Playwright drives Chromium to perform
+multi-page user journeys, which catches browser-visible navigation and
+interaction issues that backend tests cannot see. Its runner creates temporary
+database/upload storage and disables provider calls; Node.js and npm are
+needed only for this browser-test command.
 
 ## Data
 

@@ -38,6 +38,116 @@ The UI snapshot set is in `qa/ui/`: `before-375.png`, `before-768.png`, `before-
 
 Gemini model listing and pinned Gemini/OpenRouter requests were completed earlier in the approved phase. No provider request was made in the final fresh-clone journey or after the 4-of-5 call budget was reached.
 
-## Not run
+## Deployed Phase D (no user-initiated writes)
 
-Streamlit Community Cloud deployment was not attempted. The fresh-clone journey is a local browser check, not a production deployment test.
+Run on 13 Nov 2026 against
+`https://handovertrail-aryankhode.streamlit.app/`. The public app footer showed
+`839953b`, matching `origin/main` at
+`839953ba1c7a79f3d31e99601fe5db7ebeb6c5b5`. A clean browser load reached the
+landing page in about 12 seconds. Direct URLs for Review Claims, Handover View,
+and Exit Interview rendered; Upload Sources returned HTTP 200 and rendered
+through in-app navigation. The initial reviewer state displayed 8 sources,
+17 excerpts, 13 pending claims, and 22 open gaps. Incoming was shown 7 sources
+and 15 excerpts, with zero approved claims and zero released versions.
+
+Streamlit's current Community Cloud documentation says apps without traffic
+for 12 hours go to sleep and visitors see a sleeping page with a “Yes, get this
+app back up!” action. The live app was not left idle for 12 hours, so its
+actual sleep screen and wake time were not tested. Source:
+<https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app#app-hibernation>.
+
+Browser checks at 375, 768, and 1440 CSS pixels found the Upload
+Sources document width equal to the viewport width at each size. The Reviewer
+view showed three Version A/Version B comparisons, 13 pending claim cards,
+history expanders, and evidence references. The Exit Interview page exposed
+the Reviewer question-preparation controls; the Departing view correctly
+showed no project claims/sources and an empty assigned-question state.
+
+Opening Review Claims as Admin/Reviewer automatically invokes conflict
+detection. That code rebuilds derived claim slots and inserts or refreshes
+conflict/gap records. This shared-database side effect was not apparent before
+the page was opened; exact before/after row counts were not collected. No
+user-initiated review, upload, resolution, interview, release, or acknowledgement
+action was performed.
+
+**Important live finding:** Incoming could see the Upload files tab, file
+picker, sensitivity selector, “Save and process uploaded files” button,
+“Load pre-packaged demo files” button, and “Parse unprocessed sources” button.
+No upload, demo-load, parse, approval, rejection, conflict resolution, release,
+acknowledgement, reboot, or real provider request was performed. The live
+Review Claims and Upload Sources rendered page markup did not contain the
+synthetic restricted markers checked in this run. The review controls for
+approval were not available to Incoming; extraction and validation were
+disabled and there were no visible claims to review.
+
+Changing the role in the selector affected that browser session and
+cross-page navigation. A full browser refresh reset the role to Admin.
+Adding `?role=reviewer` did not set the Reviewer role; a new app session used
+its default Admin role. These are demo behaviors, not authentication.
+
+The Incoming Handover View displayed “No handover has been released yet.”
+and “A Reviewer or Admin must release an approved snapshot before it appears
+here.” The reviewer queue was entirely pending. This is a material first-visit
+judge risk because no release/acknowledgement journey can be completed without
+state-changing actions.
+
+The page reported “2 MB per file” while the upload widget reported “200MB per
+file.” Upload validation/rejection cases were not exercised. One unidentified
+404 resource was logged on page loads; a third-party Heap analytics request
+was aborted, and the browser emitted Streamlit feature-policy/sandbox warnings.
+No application stack trace was observed. Screenshots were not exported to
+workspace files; see `DEPLOYED_QA_REPORT.md` for evidence limits and the owner
+checklist.
+
+### Not tested on the live service
+
+- Approving/rejecting claims, conflict resolution, interview question
+  generation/answer submission, claim editing, release, or acknowledgement:
+  these write to the single shared database.
+- Gemini/OpenRouter extraction: no real provider call was made, so the
+  configured model names and actual provider response are not verified here.
+- Empty-database Cloud bootstrap, app reboot/ephemeral-storage behavior,
+  concurrent uploads, file-input edge cases, XSS/prompt injection, keyboard
+  behavior, Firefox/WebKit, browser back/forward, or two-session concurrency.
+- Streamlit Cloud Python version, logs, configured secret names, and provider
+  dashboard quotas; these require the owner’s Cloud/API access.
+
+The complete coverage matrix, priorities, and re-run instructions are in
+[`DEPLOYED_QA_REPORT.md`](./DEPLOYED_QA_REPORT.md). The checks made no
+user-initiated writes, but Review Claims rendering automatically refreshed
+derived conflict/gap records. This is not proof that all three improvements
+work end-to-end in production.
+
+## Local workspace and UX regression tests
+
+On `r3/ux-hardening`, the focused backend suite contains **40 tests**. It uses
+temporary SQLite files and synthetic inputs; provider functions are replaced
+or disabled so the tests do not call Gemini or OpenRouter.
+
+The browser suite uses Playwright, a tool that opens Chromium and operates the
+app like a user. From the `HandoverTrail` directory:
+
+```powershell
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+The runner selects a free local port, starts Streamlit with a temporary
+database and uploads directory, disables provider calls, and removes its
+temporary data afterward. Docker is not required because the app's local test
+database is SQLite.
+
+The three browser journeys cover:
+
+- Reviewer validation, claim search, and return after a browser refresh.
+- Reviewer approval and release, followed by Incoming viewing and
+  acknowledging the released version.
+- Markdown upload and extraction in a new workspace, no demo-claim mixing, refresh
+  persistence, then a second empty workspace that remains isolated from the
+  first.
+
+The Playwright result is local browser evidence only; it does not verify the
+public Cloud deployment, real provider responses, multiple browsers, or
+authenticated access. The workspace token is an access-by-link demo mechanism,
+not a login.

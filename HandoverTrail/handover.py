@@ -16,11 +16,12 @@ from ui import (
     review_badge,
     trust_badge,
 )
+from workspace import get_active_project_id
 
 configure_page("Handover · HandoverTrail")
 bootstrap()
 
-PROJECT_ID = "PROJ-DEMO-001"
+PROJECT_ID = get_active_project_id()
 user_role, _counts = page_shell(
     6,
     "Project handover",
