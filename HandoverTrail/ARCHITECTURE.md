@@ -7,27 +7,30 @@
 3. The Upload Sources page persists accepted `.txt` and `.csv` upload bytes under `uploads/<project_id>/`. The parser creates source-linked excerpts and reparses only selected or unparsed sources.
 4. The Review Claims page sends public evidence to the provider gateway, which masks contact, credential-like, and long ID-number-like values before sending it to Gemini or the pinned OpenRouter model. Restricted evidence is never sent to either provider and is processed only by the local heuristic.
 5. The local conflict detector extracts claim slots, normalizes names and dates, compares claims from separate sources, and records task/decision/risk/single-source gaps. The validator marks claims corroborated only when comparable slot values agree; source count alone is insufficient.
-6. The review functions authorize approve/reject actions, write review and audit rows, and select the actor from the demo role's user row.
-7. Retrieval filters sources, chunks, claims, and claim evidence before the pages render them. The Incoming handover includes approved claims only when all linked sources are public.
+6. Reviewers turn open gaps into draft exit-interview questions. The assigned Departing identity submits an answer that is stored as a timestamped `interview` source, chunked, and extracted from that source only into pending claims.
+7. The review functions authorize approve/reject actions, write review and audit rows, and resolve an interview gap after a linked interview claim is approved.
+8. Retrieval filters sources, chunks, claims, and claim evidence before the pages render them. The Incoming role sees interview sources only when all claims linked to that answer are approved; other claims are visible only when approved and every linked source is public.
 
 ## SQLite schema
 
 - `users`: seeded demo identities for Admin, Reviewer, and Incoming.
 - `projects`: project records, including the demo project.
-- `sources`: file metadata, `sensitivity` (`public` or `restricted`), and `source_type`.
+- `sources`: file metadata, `sensitivity` (`public` or `restricted`), and `source_type` (`source` or `interview`).
 - `evidence_chunks`: parsed excerpts, source linkage, and chunk indexes.
 - `claims`: claim text, type, trust status, review status, and `claim_source` (cached demo or the extraction method).
 - `claim_evidence`: many-to-many links between claims and evidence chunks.
 - `reviews`: approve/reject/edit records with reviewer and timestamp.
 - `audit_logs`: allowed and denied review actions with actor, target, action, and timestamp.
 - `claim_slots`, `claim_conflicts`, and `gaps`: derived slot values, conflict/corroboration comparisons, and open missing-evidence records.
-- Round 3 scaffolding not yet active: `claim_versions`, `questions`, `answers`, `handover_versions`, `handover_acks`, and `user_role_assignments`.
+- `questions` and `answers`: assigned draft/sent questions and timestamped answer records linked to their interview source.
+- `user_role_assignments`: additive role assignments, including the demo Departing identity without rebuilding the legacy `users.role` constraint.
+- Round 3 scaffolding not yet active: `claim_versions`, `handover_versions`, and `handover_acks`.
 
 `HANDOVERTRAIL_DB` overrides the default `<project directory>/handovertrail.db` path. `bootstrap()` uses `CREATE TABLE IF NOT EXISTS` and additive column migrations, so it can initialize a fresh database or upgrade the known older schema without replacing the database file.
 
 ## Permission model
 
-The role selector is a demo control, not authentication. Admin and Reviewer can view all source sensitivities and can review claims. Incoming can view only public material and only approved claims. A claim is omitted when it has no evidence link or any linked chunk belongs to a non-public or unknown source. Evidence excerpts are checked with the same rule. Common email, phone, credential-like, and long numeric ID values are additionally masked in Incoming claim text and evidence display.
+The role selector is a demo control, not authentication. Admin and Reviewer can view all source sensitivities and can review claims. Incoming can view only public material and only approved claims. Departing can access only questions tied to the demo Departing user ID and has no access to the project source/claim retrieval functions. A claim is omitted when it has no evidence link or any linked chunk belongs to a non-public or unknown source. Public interview sources are additionally withheld until all linked claims are approved. Common email, phone, credential-like, and long numeric ID values are masked in Incoming claim text and evidence display.
 
 The handover page reports only the number of approved claims hidden because they reference restricted sources; it does not show their titles or text. Approve/reject functions check permissions before writing. Denied actions are audited.
 

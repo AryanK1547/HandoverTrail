@@ -8,6 +8,7 @@ import pytest
 import database
 import conflict_detection
 import extractor
+import interviews
 import masking
 import permissions
 import provider_gateway
@@ -95,6 +96,19 @@ def _create_claim(
     conn.close()
 
 
+def _create_gap(gap_id: str, gap_type: str, subject: str) -> None:
+    conn = database.get_connection()
+    conn.execute(
+        """
+        INSERT INTO gaps (id, project_id, gap_type, subject, status, created_at)
+        VALUES (?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)
+        """,
+        (gap_id, PROJECT_ID, gap_type, subject),
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_round3_schema_migration_is_additive_and_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -116,6 +130,15 @@ def test_round3_schema_migration_is_additive_and_idempotent(
             file_type TEXT NOT NULL,
             uploaded_at TEXT NOT NULL,
             FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        );
+        CREATE TABLE questions (
+            id TEXT PRIMARY KEY,
+            gap_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            assigned_role TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
         INSERT INTO projects
             (project_id, name, description, created_at, updated_at)
@@ -144,7 +167,6 @@ def test_round3_schema_migration_is_additive_and_idempotent(
         "answers",
         "handover_versions",
         "handover_acks",
-        "user_role_assignments",
     }
     table_names = {
         row["name"]
@@ -155,6 +177,16 @@ def test_round3_schema_migration_is_additive_and_idempotent(
     assert round3_tables <= table_names
     for table_name in round3_tables:
         assert conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0] == 0
+    question_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(questions)")
+    }
+    assert "assigned_user_id" in question_columns
+    assert conn.execute(
+        """
+        SELECT COUNT(*) FROM user_role_assignments
+        WHERE user_id = 'USR-DEMO-DEPARTING' AND role = 'Departing'
+        """
+    ).fetchone()[0] == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM users WHERE role = 'Reviewer'"
     ).fetchone()[0] == 1
@@ -957,3 +989,178 @@ def test_conflict_resolution_is_audited(isolated_db: Path) -> None:
         "claim_conflict",
         conflict_id,
     )
+
+
+def test_exit_interview_questions_are_generated_editable_and_role_scoped(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    gap_types = (
+        "task_without_owner",
+        "decision_missing_date",
+        "decision_missing_rationale",
+        "risk_missing_mitigation",
+        "single_source_claim",
+    )
+    for index, gap_type in enumerate(gap_types):
+        _create_gap(f"GAP-INTERVIEW-{index}", gap_type, f"item {index}")
+
+    assert interviews.generate_questions("Reviewer", PROJECT_ID) == 5
+    assert interviews.generate_questions("Reviewer", PROJECT_ID) == 0
+    questions = interviews.get_questions("Reviewer", PROJECT_ID)
+    assert len(questions) == 5
+    assert {question["status"] for question in questions} == {"DRAFT"}
+    assert all(question["assigned_user_id"] == interviews.DEPARTING_USER_ID for question in questions)
+    assert any("Who will own" in question["text"] for question in questions)
+    assert any("When was" in question["text"] for question in questions)
+    assert any("Why was" in question["text"] for question in questions)
+    assert any("mitigation" in question["text"] for question in questions)
+    assert any("another source" in question["text"] for question in questions)
+
+    custom_id = interviews.add_question(
+        "Reviewer",
+        PROJECT_ID,
+        "GAP-INTERVIEW-0",
+        "Where is the ownership plan recorded?",
+    )
+    interviews.update_question("Reviewer", custom_id, "Who will maintain the ownership record?")
+    interviews.delete_question("Reviewer", custom_id)
+    assert interviews.get_questions("Departing", PROJECT_ID) == []
+    assert interviews.send_questions("Reviewer", PROJECT_ID) == 5
+
+    conn = database.get_connection()
+    conn.execute(
+        """
+        INSERT INTO questions
+            (id, gap_id, text, status, assigned_role, assigned_user_id, created_by, created_at)
+        VALUES ('Q-OTHER-USER', 'GAP-INTERVIEW-0', 'Not assigned to this leaver',
+                'SENT', 'Departing', 'USR-DEMO-INCOMING', 'USR-DEMO-REVIEWER', CURRENT_TIMESTAMP)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    departing_questions = interviews.get_questions("Departing", PROJECT_ID)
+    assert len(departing_questions) == 5
+    assert all(question["status"] == "SENT" for question in departing_questions)
+    assert "Q-OTHER-USER" not in {question["id"] for question in departing_questions}
+    with pytest.raises(PermissionError):
+        interviews.get_questions("Incoming", PROJECT_ID)
+    with pytest.raises(PermissionError):
+        interviews.generate_questions("Departing", PROJECT_ID)
+
+
+def test_exit_interview_answer_becomes_scoped_pending_evidence_and_resolves_gap(
+    isolated_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_project()
+    _create_gap("GAP-ANSWER-OWNER", "task_without_owner", "T-55")
+    existing_evidence = _create_source(
+        "SRC-EXISTING",
+        "existing.txt",
+        "public",
+        "An unrelated existing decision.",
+    )
+    _create_claim("CLM-EXISTING", [existing_evidence])
+    question_id = interviews.add_question(
+        "Reviewer",
+        PROJECT_ID,
+        "GAP-ANSWER-OWNER",
+        "Who will own task T-55?",
+    )
+    interviews.send_questions("Reviewer", PROJECT_ID)
+    monkeypatch.setattr(source_parser, "UPLOADS_DIR", tmp_path / "uploads")
+
+    def unexpected_provider_call(*_args, **_kwargs):
+        raise AssertionError("Tests must not make provider calls.")
+
+    monkeypatch.setattr(extractor, "generate_gemini_response", unexpected_provider_call)
+    monkeypatch.setattr(extractor, "generate_openrouter_response", unexpected_provider_call)
+    result = interviews.submit_answer(
+        "Departing",
+        question_id,
+        "The handoff is written in the service runbook.",
+        sensitivity="public",
+    )
+
+    conn = database.get_connection()
+    answer = conn.execute(
+        """
+        SELECT a.text, a.author_id, a.source_id, a.created_at, s.file_name,
+               s.sensitivity, s.source_type, q.status, g.status AS gap_status
+        FROM answers a
+        JOIN sources s ON s.source_id = a.source_id
+        JOIN questions q ON q.id = a.question_id
+        JOIN gaps g ON g.id = q.gap_id
+        WHERE a.id = ?
+        """,
+        (result["answer_id"],),
+    ).fetchone()
+    extracted_claim = conn.execute(
+        """
+        SELECT c.claim_id, c.claim_text, c.claim_source, c.review_status,
+               ce.evidence_id, e.source_id
+        FROM claims c
+        JOIN claim_evidence ce ON ce.claim_id = c.claim_id
+        JOIN evidence_chunks e ON e.evidence_id = ce.evidence_id
+        WHERE e.source_id = ? AND c.claim_id <> 'CLM-EXISTING'
+        """,
+        (result["source_id"],),
+    ).fetchone()
+    existing_claim = conn.execute(
+        "SELECT claim_id FROM claims WHERE claim_id = 'CLM-EXISTING'"
+    ).fetchone()
+    chunk_count = conn.execute(
+        "SELECT COUNT(*) FROM evidence_chunks WHERE source_id = ?",
+        (result["source_id"],),
+    ).fetchone()[0]
+    audit = conn.execute(
+        """
+        SELECT actor_id, action, target_type, target_id FROM audit_logs
+        WHERE target_id = ?
+        """,
+        (result["answer_id"],),
+    ).fetchone()
+    conn.close()
+
+    assert answer["author_id"] == interviews.DEPARTING_USER_ID
+    assert answer["created_at"]
+    assert answer["source_id"] == result["source_id"]
+    assert answer["sensitivity"] == "public"
+    assert answer["source_type"] == "interview"
+    assert answer["status"] == "ANSWERED"
+    assert answer["gap_status"] == "answered-pending-review"
+    assert chunk_count == 2
+    assert extracted_claim["review_status"] == "PENDING"
+    assert extracted_claim["claim_text"] == "Interview answer: The handoff is written in the service runbook."
+    assert extracted_claim["claim_source"] == "Interview answer (verbatim)"
+    assert extracted_claim["source_id"] == result["source_id"]
+    assert existing_claim is not None
+    assert tuple(audit) == (
+        interviews.DEPARTING_USER_ID,
+        "SUBMIT_INTERVIEW_ANSWER",
+        "answer",
+        result["answer_id"],
+    )
+    assert result["claims_created"] == 1
+
+    incoming_sources = retrieval.get_visible_sources("Incoming", PROJECT_ID)
+    incoming_evidence = retrieval.get_visible_evidence_chunks("Incoming", PROJECT_ID)
+    assert result["source_id"] not in {source["source_id"] for source in incoming_sources}
+    assert result["source_id"] not in {chunk["source_id"] for chunk in incoming_evidence}
+    assert extracted_claim["claim_id"] not in {
+        claim["claim_id"] for claim in retrieval.get_visible_claims("Incoming", PROJECT_ID)
+    }
+
+    permissions.perform_claim_review("Reviewer", extracted_claim["claim_id"], "APPROVED")
+    conn = database.get_connection()
+    gap_status = conn.execute(
+        "SELECT status FROM gaps WHERE id = 'GAP-ANSWER-OWNER'"
+    ).fetchone()[0]
+    conn.close()
+    assert gap_status == "resolved"
+    assert result["source_id"] in {
+        source["source_id"] for source in retrieval.get_visible_sources("Incoming", PROJECT_ID)
+    }

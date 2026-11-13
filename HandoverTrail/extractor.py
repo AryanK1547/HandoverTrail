@@ -1,7 +1,7 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Iterable
 from database import get_connection
 from provider_gateway import (
     build_provider_payload,
@@ -116,6 +116,7 @@ def extract_claims_from_evidence(
     api_key: str = None,
     openrouter_api_key: str = None,
     progress_callback: Callable[[int, str], None] | None = None,
+    source_ids: Iterable[str] | None = None,
 ) -> dict:
     def report_progress(value: int, message: str) -> None:
         if progress_callback:
@@ -125,12 +126,25 @@ def extract_claims_from_evidence(
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
+    query = """
         SELECT e.evidence_id, e.excerpt, e.reference_location, s.file_name, s.sensitivity
         FROM evidence_chunks e
         JOIN sources s ON e.source_id = s.source_id
         WHERE s.project_id = ?
-    """, (project_id,))
+    """
+    params: list[str] = [project_id]
+    selected_source_ids = list(dict.fromkeys(source_ids)) if source_ids is not None else None
+    if selected_source_ids is not None:
+        if not selected_source_ids:
+            conn.close()
+            return {
+                "status": "error",
+                "message": "Select at least one source for scoped claim extraction.",
+            }
+        placeholders = ",".join("?" for _ in selected_source_ids)
+        query += f" AND s.source_id IN ({placeholders})"
+        params.extend(selected_source_ids)
+    cursor.execute(query, params)
     chunks = cursor.fetchall()
 
     if not chunks:
@@ -247,9 +261,16 @@ def extract_claims_from_evidence(
 
     report_progress(88, f"Saving {len(claims_dict)} extracted claims...")
 
-    # Clear previous candidate claims for clean slate re-runs
-    cursor.execute("DELETE FROM claim_evidence WHERE claim_id IN (SELECT claim_id FROM claims WHERE project_id = ?)", (project_id,))
-    cursor.execute("DELETE FROM claims WHERE project_id = ?", (project_id,))
+    if selected_source_ids is None:
+        # Full-project re-runs replace prior candidates; scoped runs append interview claims.
+        cursor.execute(
+            """
+            DELETE FROM claim_evidence
+            WHERE claim_id IN (SELECT claim_id FROM claims WHERE project_id = ?)
+            """,
+            (project_id,),
+        )
+        cursor.execute("DELETE FROM claims WHERE project_id = ?", (project_id,))
 
     created_count = 0
     now = datetime.now().isoformat()
