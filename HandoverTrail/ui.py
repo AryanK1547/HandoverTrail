@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import functools
 import html
 import json
+import os
 import subprocess
 
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
 from database import DEMO_PROJECT_ID, PROJECT_ROOT, get_connection
+from handover_release import get_release_readiness
 from permissions import normalize_role
 from retrieval import (
     count_hidden_claims,
@@ -71,6 +74,21 @@ _ROLE_DESCRIPTIONS = {
     "Departing": "Can answer only interview questions assigned to the demo leaver.",
 }
 
+_REVIEW_ROLES = frozenset({"Admin", "Reviewer"})
+# Sidebar navigation in workflow order: (page, label, roles allowed to use it).
+_NAVIGATION = (
+    ("app.py", "Overview", frozenset({"Admin", "Reviewer", "Incoming", "Departing"})),
+    (
+        "pages/0_Guided_Tour.py",
+        "Guided tour",
+        frozenset({"Admin", "Reviewer", "Incoming", "Departing"}),
+    ),
+    ("pages/1_Upload_Sources.py", "1 · Connect sources", _REVIEW_ROLES),
+    ("pages/2_Review_Claims.py", "2 · Extract and review claims", _REVIEW_ROLES),
+    ("pages/4_Exit_Interview.py", "3 · Exit interview", _REVIEW_ROLES | {"Departing"}),
+    ("pages/3_Handover_View.py", "4 · Release and handover", _REVIEW_ROLES | {"Incoming"}),
+)
+
 _WORKFLOW = (
     ("Connect", "pages/1_Upload_Sources.py"),
     ("Reconstruct", "pages/2_Review_Claims.py"),
@@ -92,6 +110,7 @@ _CSS = """
   --ht-text: #E6EBF5;
   --ht-muted: #9AA7BF;
   --ht-primary: #5558D9;
+  --ht-primary-text: #A5B4FC;
 }
 
 html, body, button, input, textarea {
@@ -124,6 +143,43 @@ p, li, label { line-height: 1.55; }
 .ht-badge--conflict { border-left-color: #FB923C; }
 .ht-badge--restricted { border-left-color: #C4B5FD; }
 .ht-badge--public { border-left-color: #7DD3FC; }
+
+.ht-claim-type {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ht-primary-text, #A5B4FC);
+  margin-bottom: 0.15rem;
+}
+.ht-claim-text {
+  font-size: 1.2rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ht-text);
+  margin: 0.2rem 0 0.5rem 0;
+  overflow-wrap: anywhere;
+}
+.ht-why { color: var(--ht-muted); font-size: 0.9rem; margin: 0.35rem 0 0.6rem 0; }
+.ht-quote {
+  border-left: 3px solid var(--ht-border);
+  background: var(--ht-surface);
+  border-radius: 0 8px 8px 0;
+  padding: 0.55rem 0.8rem;
+  margin: 0.4rem 0;
+  overflow-wrap: anywhere;
+}
+.ht-quote__source { color: var(--ht-muted); font-size: 0.78rem; margin-bottom: 0.2rem; }
+.ht-quote__text { color: var(--ht-text); font-size: 0.92rem; white-space: pre-wrap; }
+.ht-step { display: flex; gap: 0.75rem; align-items: flex-start; margin: 0.2rem 0 0.7rem 0; }
+.ht-step__num {
+  flex: 0 0 1.9rem; height: 1.9rem; border-radius: 999px; background: var(--ht-primary);
+  color: #fff; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.ht-step__body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ht-step__verb { color: var(--ht-primary-text, #A5B4FC); font-weight: 700; font-size: 0.8rem;
+  text-transform: uppercase; letter-spacing: 0.06em; }
 
 [data-testid="stAlert"] { border-radius: 10px; }
 [data-testid="stExpander"] { border-color: var(--ht-border); border-radius: 10px; }
@@ -180,37 +236,32 @@ def _dashboard_counts(role: str) -> dict[str, int]:
     claims = get_visible_claims(role, project_id)
     source_count_override = None
     evidence_count_override = None
-    if normalize_role(role) in {"Admin", "Reviewer"}:
+    question_status = {"DRAFT": 0, "SENT": 0, "ANSWERED": 0}
+    readiness = None
+    open_gaps = 0
+    if normalize_role(role) in {"Admin", "Reviewer", "Departing"}:
         conn = get_connection()
         try:
-            open_gaps = conn.execute(
-                "SELECT COUNT(*) FROM gaps WHERE project_id = ? AND status = 'open'",
-                (project_id,),
-            ).fetchone()[0]
-            interview_questions = conn.execute(
+            for row in conn.execute(
                 """
-                SELECT COUNT(*) FROM questions q
+                SELECT q.status, COUNT(*) AS total FROM questions q
                 JOIN gaps g ON g.id = q.gap_id
-                WHERE g.project_id = ? AND q.status IN ('DRAFT', 'SENT')
+                WHERE g.project_id = ? AND q.assigned_user_id = 'USR-DEMO-DEPARTING'
+                GROUP BY q.status
                 """,
                 (project_id,),
-            ).fetchone()[0]
+            ):
+                question_status[row["status"]] = row["total"]
         finally:
             conn.close()
+    if normalize_role(role) in {"Admin", "Reviewer"}:
+        readiness = get_release_readiness(role, project_id)
+        open_gaps = readiness["open_gaps"]
+        interview_questions = question_status["DRAFT"] + question_status["SENT"]
     elif normalize_role(role) == "Departing":
-        conn = get_connection()
-        try:
-            open_gaps = 0
-            interview_questions = conn.execute(
-                """
-                SELECT COUNT(*) FROM questions
-                WHERE assigned_user_id = 'USR-DEMO-DEPARTING' AND status = 'SENT'
-                """
-            ).fetchone()[0]
-        finally:
-            conn.close()
+        interview_questions = question_status["SENT"]
     else:
-        open_gaps = interview_questions = 0
+        interview_questions = 0
     released_claims = None
     if normalize_role(role) == "Incoming":
         conn = get_connection()
@@ -268,6 +319,14 @@ def _dashboard_counts(role: str) -> dict[str, int]:
         "interview_questions": interview_questions,
         "unvalidated": sum(not row["validated_at"] for row in claims),
         "released": released_claims is not None and released_claims > 0,
+        "draft_questions": question_status["DRAFT"],
+        "sent_questions": question_status["SENT"],
+        "answered_questions": question_status["ANSWERED"],
+        "releasable": readiness["releasable"] if readiness else 0,
+        "approved_excluded": readiness["approved_excluded"] if readiness else 0,
+        "release_version": readiness["latest_version"] if readiness else 0,
+        "release_acknowledged": bool(readiness and readiness["latest_acknowledged"]),
+        "release_needed": bool(readiness and readiness["has_unreleased_changes"]),
     }
 
 
@@ -275,6 +334,8 @@ def _ai_mode() -> str:
     last_method = st.session_state.get("last_extraction_method")
     if last_method:
         return str(last_method)
+    if os.environ.get("HANDOVERTRAIL_DISABLE_PROVIDERS", "").casefold() in {"1", "true", "yes"}:
+        return "Local rule-based extraction (providers disabled)"
     try:
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         openrouter_key = st.secrets.get("OPENROUTER_API_KEY")
@@ -300,9 +361,26 @@ def sidebar_identity() -> str:
             st.caption(f"Workspace {project_id[-6:]}")
         st.markdown(badge_html(role, variant="primary"), unsafe_allow_html=True)
         st.caption(_ROLE_DESCRIPTIONS.get(role, "Demo role."))
-        st.caption("Separate from demo data · workspace follows this URL")
+        if project_id == DEMO_PROJECT_ID:
+            st.caption("Shared synthetic project · uploads go to a separate workspace")
+        else:
+            st.caption("Separate from demo data · workspace follows this URL")
         st.caption(f"AI mode · {_ai_mode()}")
+        st.divider()
+        sidebar_navigation(role)
     return role
+
+
+def sidebar_navigation(role: str) -> None:
+    """Role-aware page links that keep the workspace and role in the URL."""
+    normalized_role = normalize_role(role)
+    query_params = dict(st.query_params)
+    st.markdown("**Pages**")
+    for page, label, allowed_roles in _NAVIGATION:
+        if normalized_role in allowed_roles:
+            st.page_link(page, label=label, query_params=query_params)
+    if normalized_role not in _REVIEW_ROLES:
+        st.caption("Other workflow pages are available to Admin and Reviewer.")
 
 
 def _rail_labels(counts: dict[str, int]) -> tuple[str, ...]:
@@ -330,7 +408,12 @@ def workflow_rail(current_step: int, counts: dict[str, int], role: str) -> None:
     query_params = dict(st.query_params)
     with st.container(key="workflow-rail-desktop"):
         columns = st.columns(len(visible_steps))
-        current_visible_step = 1 if normalized_role in {"Incoming", "Departing"} else current_step
+        if current_step == 0:
+            current_visible_step = 0  # the guided tour is not a workflow stage
+        else:
+            current_visible_step = (
+                1 if normalized_role in {"Incoming", "Departing"} else current_step
+            )
         for index, (column, (name, page), count) in enumerate(
             zip(columns, visible_steps, labels),
             start=1,
@@ -345,6 +428,9 @@ def workflow_rail(current_step: int, counts: dict[str, int], role: str) -> None:
                     st.page_link(page, label=name, query_params=query_params)
                     st.caption(count)
     with st.container(key="workflow-rail-mobile"):
+        if current_step == 0:
+            st.caption("Guided tour")
+            return
         if normalized_role == "Incoming":
             label = "Handover"
             step = 1
@@ -360,62 +446,181 @@ def workflow_rail(current_step: int, counts: dict[str, int], role: str) -> None:
         st.caption(f"Step {step} of {total} · {label}")
 
 
-def next_step_banner(counts: dict[str, int], role: str) -> None:
+def next_step(counts: dict[str, int], role: str) -> dict:
+    """Derive the single most useful next action from stored workspace state.
+
+    Returns ``kind`` (info/success/warning), ``message``, a ``primary``
+    ``(label, page)`` link, and an optional ``secondary`` link.
+    """
+    upload_page = "pages/1_Upload_Sources.py"
+    review_page = "pages/2_Review_Claims.py"
+    interview_page = "pages/4_Exit_Interview.py"
+    handover_page = "pages/3_Handover_View.py"
     normalized_role = normalize_role(role)
-    query_params = dict(st.query_params)
+
+    def step(kind: str, message: str, primary, secondary=None) -> dict:
+        return {"kind": kind, "message": message, "primary": primary, "secondary": secondary}
+
     if normalized_role == "Incoming":
         if counts["released"]:
-            st.success(
-                f"The latest reviewer-released snapshot contains {counts['approved']} claims."
+            return step(
+                "success",
+                f"The latest reviewer-released snapshot contains {counts['approved']} claims.",
+                ("Open released handover", handover_page),
             )
-        else:
-            st.info("No handover has been released yet. Ask a Reviewer to publish one.")
-        st.page_link(
-            "pages/3_Handover_View.py",
-            label="Open released handover",
-            query_params=query_params,
+        return step(
+            "info",
+            "No handover has been released yet. Ask a Reviewer to publish one.",
+            ("Open released handover", handover_page),
         )
-        return
     if normalized_role == "Departing":
-        st.info("Your next step is to answer the questions assigned to you.")
-        st.page_link(
-            "pages/4_Exit_Interview.py",
-            label="Open your exit interview",
-            query_params=query_params,
-        )
-        return
-
-    if counts["sources"] == 0:
-        message, label, page = "No sources are available in this workspace.", "Connect sources", "pages/1_Upload_Sources.py"
-    elif counts["evidence"] == 0:
-        message, label, page = f"{counts['sources']} sources are ready to parse.", "Parse sources", "pages/1_Upload_Sources.py"
-    elif counts["claims"] == 0:
-        message, label, page = f"{counts['evidence']} evidence excerpts are ready for extraction.", "Extract claims", "pages/2_Review_Claims.py"
-    elif counts["unvalidated"]:
-        message, label, page = f"{counts['unvalidated']} claims still need evidence validation.", "Validate claims", "pages/2_Review_Claims.py"
-    elif counts["pending"]:
-        message, label, page = f"{counts['pending']} claims are waiting for human review.", "Review claims", "pages/2_Review_Claims.py"
-    elif counts["open_gaps"]:
         if counts["interview_questions"]:
             message = (
-                f"{counts['open_gaps']} evidence gaps remain; "
-                f"{counts['interview_questions']} interview question(s) are already in progress."
+                f"{counts['interview_questions']} question(s) are waiting for your answer."
+            )
+        elif counts["answered_questions"]:
+            message = (
+                "You have answered every question sent to you. "
+                "A Reviewer will check your answers."
             )
         else:
-            message = f"{counts['open_gaps']} evidence gaps can be turned into exit-interview questions."
-        label, page = "Continue exit interview", "pages/4_Exit_Interview.py"
-    elif counts["approved"]:
-        message, label, page = f"{counts['approved']} approved claims are ready for a handover release.", "Release handover", "pages/3_Handover_View.py"
-    else:
-        message, label, page = "No claims are ready for handover.", "Review claims", "pages/2_Review_Claims.py"
-    st.info(message)
-    st.page_link(page, label=label, query_params=query_params)
+            message = "No questions have been sent to you yet. A Reviewer prepares them first."
+        return step("info", message, ("Open your exit interview", interview_page))
+
+    release_link = (
+        ("Release handover", handover_page) if counts["release_needed"] else None
+    )
+    if counts["sources"] == 0:
+        return step(
+            "info",
+            "No sources are available in this workspace.",
+            ("Connect sources", upload_page),
+        )
+    if counts["evidence"] == 0:
+        return step(
+            "info",
+            f"{counts['sources']} sources are ready to parse.",
+            ("Parse sources", upload_page),
+        )
+    if counts["claims"] == 0:
+        return step(
+            "info",
+            f"{counts['evidence']} evidence excerpts are ready for extraction.",
+            ("Extract claims", review_page),
+        )
+    if counts["unvalidated"]:
+        return step(
+            "info",
+            f"{counts['unvalidated']} claims still need evidence validation.",
+            ("Validate claims", review_page),
+        )
+    if counts["pending"]:
+        message = f"{counts['pending']} claims are waiting for human review."
+        if release_link:
+            message += (
+                f" {counts['releasable']} approved claim(s) can already be released."
+            )
+        return step("info", message, ("Review claims", review_page), release_link)
+    if counts["draft_questions"]:
+        return step(
+            "info",
+            f"{counts['draft_questions']} draft interview question(s) are ready to send "
+            "to Departing.",
+            ("Continue exit interview", interview_page),
+            release_link,
+        )
+    interview_started = (
+        counts["draft_questions"] + counts["sent_questions"] + counts["answered_questions"]
+    ) > 0
+    if counts["open_gaps"] and not interview_started:
+        message = (
+            f"{counts['open_gaps']} evidence gaps can be turned into exit-interview questions."
+        )
+        if release_link:
+            message += " The interview is optional; approved claims can be released now."
+        return step("info", message, ("Prepare exit interview", interview_page), release_link)
+    waiting = (
+        f" {counts['sent_questions']} interview question(s) are still with Departing."
+        if counts["sent_questions"]
+        else ""
+    )
+    if release_link:
+        if counts["release_version"]:
+            message = (
+                f"Approved claims changed since version {counts['release_version']}. "
+                f"{counts['releasable']} claim(s) are ready for a new release."
+            )
+        else:
+            message = f"{counts['releasable']} approved claims are ready for a handover release."
+        return step("info", message + waiting, release_link)
+    interview_link = (
+        ("Open exit interview", interview_page) if counts["sent_questions"] else None
+    )
+    if counts["release_version"]:
+        acknowledgement = (
+            "Incoming has acknowledged it."
+            if counts["release_acknowledged"]
+            else "Incoming has not acknowledged it yet; switch the demo role to Incoming to do so."
+        )
+        return step(
+            "success",
+            f"Handover version {counts['release_version']} is released and up to date. "
+            f"{acknowledgement}{waiting}",
+            ("View released handover", handover_page),
+            interview_link,
+        )
+    if interview_link:
+        return step(
+            "info",
+            f"{counts['sent_questions']} interview question(s) are waiting for Departing. "
+            "Switch the demo role to Departing to answer them.",
+            interview_link,
+        )
+    if counts["approved"]:
+        return step(
+            "warning",
+            f"{counts['approved']} approved claim(s) rely on restricted sources or lack "
+            "evidence, so nothing can be released to Incoming yet.",
+            ("Review claims", review_page),
+        )
+    return step(
+        "info",
+        "No claims are approved yet. Approve claims before releasing a handover.",
+        ("Review claims", review_page),
+    )
 
 
-def page_shell(step: int, title: str, subtitle: str) -> tuple[str, dict[str, int]]:
+def next_step_banner(counts: dict[str, int], role: str) -> None:
+    query_params = dict(st.query_params)
+    guidance = next_step(counts, role)
+    {"success": st.success, "warning": st.warning}.get(guidance["kind"], st.info)(
+        guidance["message"]
+    )
+    links = [link for link in (guidance["primary"], guidance["secondary"]) if link]
+    for column, (label, page) in zip(st.columns(len(links) + 2), links):
+        with column:
+            st.page_link(page, label=f"{label} →", query_params=query_params)
+
+
+def page_shell(
+    step: int,
+    title: str,
+    subtitle: str,
+    *,
+    auto_stage: bool = False,
+) -> tuple[str, dict[str, int]]:
+    """Render the shared shell. ``auto_stage`` lets the claims page highlight
+    Reconstruct, Verify, or Review according to what the workspace still needs."""
     apply_theme()
     role = sidebar_identity()
     counts = _dashboard_counts(role)
+    if auto_stage:
+        if counts["claims"] == 0:
+            step = 2
+        elif counts["unvalidated"]:
+            step = 3
+        else:
+            step = 4
     workflow_rail(step, counts, role)
     st.title(title)
     st.markdown(subtitle)
@@ -423,6 +628,55 @@ def page_shell(step: int, title: str, subtitle: str) -> tuple[str, dict[str, int
     next_step_banner(counts, role)
     glossary_popover()
     return role, counts
+
+
+def claim_headline_html(claim_type: str, text: str) -> str:
+    return (
+        f'<div class="ht-claim-type">{html.escape(str(claim_type))}</div>'
+        f'<div class="ht-claim-text">{html.escape(str(text))}</div>'
+    )
+
+
+def quote_html(source: str, excerpt: str, limit: int | None = 320) -> str:
+    """A cited excerpt, escaped and optionally shortened for inline preview."""
+    shown = str(excerpt)
+    source = str(source)
+    if limit and len(shown) > limit:
+        shown = shown[:limit].rstrip() + "…"
+    return (
+        '<div class="ht-quote">'
+        f'<div class="ht-quote__source">{html.escape(str(source))}</div>'
+        f'<div class="ht-quote__text">{html.escape(shown)}</div></div>'
+    )
+
+
+def step_html(number: int, verb: str, text: str, detail: str) -> str:
+    return (
+        '<div class="ht-step">'
+        f'<div class="ht-step__num" aria-hidden="true">{number}</div>'
+        '<div class="ht-step__body">'
+        f'<div class="ht-step__verb">{html.escape(verb)}</div>'
+        f"<div>{html.escape(text)}</div>"
+        f'<div class="ht-why">{html.escape(detail)}</div></div></div>'
+    )
+
+
+def page_navigation(
+    previous: tuple[str, str] | None = None,
+    following: tuple[tuple[str, str], ...] = (),
+) -> None:
+    """Back/next links at the foot of a page so the journey never dead-ends."""
+    if not previous and not following:
+        return
+    query_params = dict(st.query_params)
+    st.divider()
+    columns = st.columns(1 + max(len(following), 1))
+    if previous:
+        with columns[0]:
+            st.page_link(previous[1], label=f"← {previous[0]}", query_params=query_params)
+    for column, (label, page) in zip(columns[1:], following):
+        with column:
+            st.page_link(page, label=f"{label} →", query_params=query_params)
 
 
 def badge_html(label: object, variant: str = "neutral", icon: str | None = None) -> str:
@@ -512,7 +766,8 @@ def glossary_popover() -> None:
         )
 
 
-def footer() -> None:
+@functools.lru_cache(maxsize=1)
+def _app_version() -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -522,9 +777,13 @@ def footer() -> None:
             text=True,
             timeout=2,
         )
-        version = result.stdout.strip()
+        return result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        version = "unavailable"
+        return "unavailable"
+
+
+def footer() -> None:
+    version = _app_version()
     st.divider()
     st.caption(
         f"HandoverTrail · {version} · Synthetic demo data only · "

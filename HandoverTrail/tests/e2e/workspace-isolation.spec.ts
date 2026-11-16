@@ -26,7 +26,10 @@ test("uploads stay isolated, are resumable, and do not show demo claims", async 
   ).toBeVisible();
   await expect(page.getByText(/Showing claims 1–1 of 1 matching 1 total/)).toBeVisible();
   await expect(
-    page.getByText("The project confirmed ZebraDB is used.", { exact: true }).first(),
+    page
+      .getByText("The project confirmed ZebraDB is used.", { exact: true })
+      .filter({ visible: true })
+      .first(),
   ).toBeVisible();
   await expect(page.getByText(/Project decision identified/)).toHaveCount(0);
   await expect(page.getByText(/Stripe as payment processor/i)).toHaveCount(0);

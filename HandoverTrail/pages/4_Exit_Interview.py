@@ -18,7 +18,7 @@ from interviews import (
     update_question,
 )
 from permissions import can_review, normalize_role
-from ui import configure_page, empty_state, footer, page_shell, show_flash_toast
+from ui import configure_page, empty_state, footer, page_navigation, page_shell, show_flash_toast
 from workspace import get_active_project_id
 
 configure_page("Exit interview · HandoverTrail")
@@ -38,12 +38,58 @@ if can_review(user_role):
         "Templates are generated from open gaps. Reviewers can edit or remove drafts, add a question, "
         "and send the remaining drafts to the assigned Departing role."
     )
-    if st.button("Generate questions from open gaps", type="primary"):
-        created = generate_questions(user_role, PROJECT_ID)
-        st.session_state["ui_flash_toast"] = f"Generated {created} new draft question(s)."
-        st.rerun()
-
     gaps = get_gap_records(user_role, PROJECT_ID)
+    questions = get_questions(user_role, PROJECT_ID)
+    drafts = [question for question in questions if question["status"] == "DRAFT"]
+    sent = [question for question in questions if question["status"] == "SENT"]
+    answered = [question for question in questions if question["status"] == "ANSWERED"]
+    st.markdown(
+        f"**{len(gaps)}** open gap(s) · **{len(drafts)}** draft · "
+        f"**{len(sent)}** waiting for Departing · **{len(answered)}** answered"
+    )
+    if sent:
+        st.info(
+            f"{len(sent)} question(s) are waiting for an answer. Switch the demo role to "
+            "Departing in the sidebar to answer them."
+        )
+    if answered:
+        st.success(
+            f"{len(answered)} answer(s) were saved as interview evidence and turned into "
+            "pending claims. Approving such a claim closes its gap."
+        )
+        st.page_link(
+            "pages/2_Review_Claims.py",
+            label="Review claims created from answers →",
+            query_params=dict(st.query_params),
+        )
+    if not gaps and not questions:
+        empty_state(
+            "No open evidence gaps were found, so there is nothing to ask.",
+            "Gaps are computed when claims are validated. Extract and validate claims "
+            "first, or continue to the handover release.",
+        )
+        st.page_link(
+            "pages/3_Handover_View.py",
+            label="Continue to handover release →",
+            query_params=dict(st.query_params),
+        )
+    if st.button(
+        "Generate questions from open gaps",
+        type="primary",
+        disabled=not gaps,
+    ):
+        try:
+            created = generate_questions(user_role, PROJECT_ID)
+        except (PermissionError, ValueError) as exc:
+            st.error(f"No question was generated: {exc}")
+        else:
+            st.session_state["ui_flash_toast"] = (
+                f"Generated {created} new draft question(s)."
+                if created
+                else "No new questions: every open gap already has a question."
+            )
+            st.rerun()
+
     if gaps:
         with st.expander("Add a question"):
             with st.form("add_interview_question"):
@@ -73,8 +119,13 @@ if can_review(user_role):
                     st.session_state["ui_flash_toast"] = "Draft question added."
                     st.rerun()
 
-    questions = get_questions(user_role, PROJECT_ID)
-    drafts = [question for question in questions if question["status"] == "DRAFT"]
+    if drafts and st.button(
+        f"Send {len(drafts)} draft question(s) to Departing",
+        key="send_drafts_top",
+    ):
+        sent_count = send_questions(user_role, PROJECT_ID)
+        st.session_state["ui_flash_toast"] = f"Sent {sent_count} question(s) to Departing."
+        st.rerun()
     if questions:
         st.markdown("**Draft and sent questions**")
         for question in questions:
@@ -115,16 +166,11 @@ if can_review(user_role):
                         st.caption(
                             f"Saved {answer['created_at']} · interview source {answer['source_id']}"
                         )
-    else:
+    elif gaps:
         empty_state(
             "There are no draft questions yet.",
             "Generate questions from open gaps or add one to an open gap.",
         )
-
-    if drafts and st.button("Send draft questions to Departing"):
-        sent = send_questions(user_role, PROJECT_ID)
-        st.session_state["ui_flash_toast"] = f"Sent {sent} question(s) to Departing."
-        st.rerun()
 
 elif normalize_role(user_role) == "Departing":
     st.subheader("Questions assigned to you")
@@ -134,7 +180,16 @@ elif normalize_role(user_role) == "Departing":
     )
     questions = get_questions(user_role, PROJECT_ID)
     if not questions:
-        empty_state("No interview questions have been sent to you yet.")
+        empty_state(
+            "No interview questions have been sent to you yet.",
+            "An Admin or Reviewer prepares questions from open evidence gaps and sends "
+            "them here. Nothing is needed from you until then.",
+        )
+    elif all(question["status"] == "ANSWERED" for question in questions):
+        st.success(
+            "You have answered every assigned question. A Reviewer will check the "
+            "claims created from your answers before they reach the handover."
+        )
     for question in questions:
         with st.container(border=True):
             st.caption(question["gap_type"].replace("_", " ").title())
@@ -176,4 +231,8 @@ elif normalize_role(user_role) == "Departing":
 else:
     st.info("Exit-interview questions are available to Admin, Reviewer, and the assigned Departing role.")
 
+page_navigation(
+    previous=("Review claims", "pages/2_Review_Claims.py") if can_review(user_role) else None,
+    following=(("Release handover", "pages/3_Handover_View.py"),) if can_review(user_role) else (),
+)
 footer()

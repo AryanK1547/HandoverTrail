@@ -138,8 +138,13 @@ database and uploads directory, disables provider calls, and removes its
 temporary data afterward. Docker is not required because the app's local test
 database is SQLite.
 
-The three browser journeys cover:
+The four browser journeys cover:
 
+- One upload workspace taken from the landing page through upload, extraction
+  with automatic validation, approval of every claim, exit-interview questions,
+  a Departing answer, approval of the resulting claim, the release summary and
+  confirmation, and Incoming acknowledgement. It also checks that Departing
+  opening the handover page gets guidance, not an error.
 - Reviewer validation, claim search, and return after a browser refresh.
 - Reviewer approval and release, followed by Incoming viewing and
   acknowledging the released version.
@@ -151,3 +156,63 @@ The Playwright result is local browser evidence only; it does not verify the
 public Cloud deployment, real provider responses, multiple browsers, or
 authenticated access. The workspace token is an access-by-link demo mechanism,
 not a login.
+
+## Workflow and navigation hardening (16 Nov 2026, local only)
+
+Local run on `r3/ux-hardening`, not pushed or deployed. `pytest -q tests`:
+**52 passed**. `npm run test:e2e`: **4 passed** (Chromium, temporary SQLite and
+upload storage, provider calls disabled). No Gemini or OpenRouter request was
+made, and the public Cloud app was not touched.
+
+Defects found by driving the full journey in a browser and fixed:
+
+- Opening Handover View as Departing raised an uncaught `PermissionError`.
+- The next-step banner kept pointing at the exit interview while any evidence
+  gap was open, so a reviewer was never guided to release. Single-source gaps
+  rarely close, which made this permanent in the demo.
+- The stored interview question could be extracted as a claim when a gap
+  subject ended with a period.
+- Claims created from a Departing answer arrived unvalidated and needed a
+  manual validation click; claims from extraction did too.
+- `get_latest_extraction_run` broke timestamp ties by random run ID, so the
+  displayed "latest" run could be the older one. This also made one backend
+  test intermittently fail.
+- Releasing twice created identical versions; the upload widget advertised
+  200 MB against the app's 2 MB limit; Streamlit's default sidebar listed every
+  page to every role and dropped the workspace and role from the URL.
+
+New regression tests: release readiness, Markdown export ordering, labelled
+question lines, one-sentence generated questions, idempotent demo registration,
+and the next-step decision table (`tests/test_ui.py`).
+
+Not verified: Cloud deployment, live providers, Firefox/WebKit, keyboard-only
+and screen-reader use, and concurrent users.
+
+## Review page, verification report, and Incoming start plan (16 Nov 2026, local only)
+
+Review Claims is now three labelled stages (Reconstruct, Verify, Review). Each
+claim card leads with the claim, shows the trust and review state plus a
+plain-language reason, quotes its first cited excerpt inline, and keeps edit,
+history, and details in one expander. A view switch (Needs review, Needs
+attention, Approved, Rejected, All) replaces the review-state dropdown.
+
+Verification now reports corroborated, single-source, conflicting, and
+missing-evidence counts plus an evidence-match check: the share of a claim's
+key words and numbers found in the excerpts it cites. The check is lexical; it
+flags a claim its own citation does not support (below 60%) but cannot prove a
+claim true or judge paraphrases. Derived at read time from stored data; no
+schema change and no provider call (`claim_insights.py`).
+
+Incoming's Handover page opens with "Where to pick up": ordered first steps
+(blockers, next actions, conflicts to settle, open questions, risks, owners),
+the source files supporting the most released claims, and a warning counting
+claims that rest on one source or conflicting sources (`handover_plan.py`). It
+is a rule-based reading order, not a schedule, and adds no facts beyond the
+released claims. Reviewers can preview it before releasing, and the Markdown
+download includes it. Every page ends with back/next links along the journey.
+
+Verification: `pytest -q tests` 55 passed; `npm run test:e2e` 4 passed.
+
+Later the same day, after adding the guided tour, private demo copies, and the
+Day 1 / Week 1 / Month 1 plan: `pytest -q tests` **57 passed**;
+`npm run test:e2e` **5 passed** (new: `guided-tour.spec.ts`).

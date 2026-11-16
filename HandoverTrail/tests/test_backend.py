@@ -1606,3 +1606,342 @@ def test_handover_release_versions_acknowledgement_and_role_checks(isolated_db: 
             )
         finally:
             conn.close()
+
+
+def test_release_readiness_explains_inclusions_exclusions_and_staleness(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    public = _create_source("SRC-READY-PUBLIC", "ready-public.txt", "public", "Public evidence")
+    restricted = _create_source(
+        "SRC-READY-RESTRICTED", "ready-restricted.txt", "restricted", "Restricted evidence"
+    )
+    _create_claim("CLM-READY-PUBLIC", [public], review_status="APPROVED")
+    _create_claim("CLM-READY-RESTRICTED", [restricted], review_status="APPROVED")
+    _create_claim("CLM-READY-PENDING", [public])
+    _create_claim("CLM-READY-REJECTED", [public], review_status="REJECTED")
+
+    with pytest.raises(PermissionError):
+        handover_release.get_release_readiness("Incoming", PROJECT_ID)
+
+    before = handover_release.get_release_readiness("Reviewer", PROJECT_ID)
+    assert before["releasable"] == 1
+    assert before["releasable_claim_ids"] == {"CLM-READY-PUBLIC"}
+    assert before["approved_excluded"] == 1
+    assert before["pending"] == 1
+    assert before["rejected"] == 1
+    assert before["latest_version"] == 0
+    assert before["has_unreleased_changes"] is True
+
+    handover_release.release_handover("Reviewer", PROJECT_ID)
+    released = handover_release.get_release_readiness("Reviewer", PROJECT_ID)
+    assert released["latest_version"] == 1
+    assert released["has_unreleased_changes"] is False
+    assert released["latest_acknowledged"] is False
+
+    handover_release.acknowledge_latest_release("Incoming", PROJECT_ID)
+    assert handover_release.get_release_readiness("Admin", PROJECT_ID)["latest_acknowledged"]
+
+    permissions.perform_claim_review("Reviewer", "CLM-READY-PENDING", "APPROVED")
+    changed = handover_release.get_release_readiness("Reviewer", PROJECT_ID)
+    assert changed["releasable"] == 2
+    assert changed["has_unreleased_changes"] is True
+
+
+def test_snapshot_markdown_lists_actionable_claims_first_with_citations(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    public = _create_source("SRC-MD-PUBLIC", "md-public.txt", "public", "Public evidence")
+    _create_claim(
+        "CLM-MD-DECISION", [public], review_status="APPROVED", claim_text="Use Redis."
+    )
+    _create_claim(
+        "CLM-MD-ACTION",
+        [public],
+        review_status="APPROVED",
+        claim_text="Rotate the webhook secret.",
+        claim_type="Next action",
+    )
+    handover_release.release_handover("Admin", PROJECT_ID)
+    document = handover_release.snapshot_markdown(
+        handover_release.get_latest_release("Incoming", PROJECT_ID)
+    )
+
+    assert document.startswith("# Project handover · version 1")
+    assert document.index("## Next action") < document.index("## Decision")
+    assert "- Rotate the webhook secret." in document
+    assert "  - Source: md-public.txt" in document
+
+
+def test_keyword_fallback_never_turns_a_labelled_question_into_a_claim() -> None:
+    claims = extractor._heuristic_claims(
+        [
+            {
+                "evidence_id": "EVD-INTERVIEW",
+                "excerpt": (
+                    "Question: The webhook owner is unclear. Who owns it?\n"
+                    "Answer: Priya Shah owns the payment webhook."
+                ),
+            }
+        ],
+        "Universal Keyword Fallback",
+    )
+
+    assert list(claims) == ["Answer: Priya Shah owns the payment webhook."]
+
+
+def test_generated_question_stays_one_sentence_when_the_gap_subject_ends_with_a_period(
+    isolated_db: Path,
+) -> None:
+    _create_project()
+    _create_gap("GAP-PERIOD", "single_source_claim", "Payment webhook owner is Priya Shah.")
+    conn = database.get_connection()
+    conn.execute(
+        """
+        INSERT INTO questions
+            (id, gap_id, text, status, assigned_role, assigned_user_id, created_by, created_at)
+        SELECT 'Q-OTHER', id, 'placeholder', 'DRAFT', 'Departing', 'USR-DEMO-DEPARTING',
+               'USR-DEMO-REVIEWER', CURRENT_TIMESTAMP
+        FROM gaps WHERE project_id = ? AND id <> 'GAP-PERIOD'
+        """,
+        (PROJECT_ID,),
+    )
+    conn.commit()
+    conn.close()
+
+    assert interviews.generate_questions("Reviewer", PROJECT_ID) == 1
+    generated = [
+        question
+        for question in interviews.get_questions("Reviewer", PROJECT_ID)
+        if question["gap_id"] == "GAP-PERIOD"
+    ]
+    assert generated[0]["text"] == (
+        "Can you confirm Payment webhook owner is Priya Shah "
+        "and point to another source that supports it?"
+    )
+
+
+def test_registering_demo_sources_is_idempotent(isolated_db: Path) -> None:
+    assert source_parser.register_demo_sources(database.DEMO_PROJECT_ID) == 0
+    assert source_parser.count_unparsed_sources(database.DEMO_PROJECT_ID) == 0
+
+
+def test_evidence_match_flags_claims_their_citation_does_not_support() -> None:
+    import claim_insights
+
+    supported = claim_insights.evidence_match(
+        "Payment webhook owner is Priya Shah.",
+        ["Payment webhook owner is Priya Shah."],
+    )
+    assert supported["assessed"] and supported["ratio"] == 1.0 and not supported["weak"]
+
+    unsupported = claim_insights.evidence_match(
+        "The release deadline moved to 30 December because Redis failed.",
+        ["The team met on Tuesday and discussed lunch plans."],
+    )
+    assert unsupported["weak"]
+    assert "december" in unsupported["missing"]
+
+    too_short = claim_insights.evidence_match("Use Redis.", ["Anything"])
+    assert too_short["assessed"] is False and too_short["weak"] is False
+
+
+def test_claim_insights_explain_trust_conflicts_and_weak_matches(isolated_db: Path) -> None:
+    import claim_insights
+
+    _create_project()
+    source_a = _create_source(
+        "SRC-INS-A", "ins-a.txt", "public", "Payment webhook owner is Priya Shah."
+    )
+    source_b = _create_source(
+        "SRC-INS-B", "ins-b.txt", "public", "Payment webhook owner is Alex Chen."
+    )
+    source_c = _create_source("SRC-INS-C", "ins-c.txt", "public", "Lunch menu for Tuesday.")
+    _create_claim("CLM-INS-A", [source_a], claim_text="Payment webhook owner is Priya Shah.")
+    _create_claim("CLM-INS-B", [source_b], claim_text="Payment webhook owner is Alex Chen.")
+    _create_claim(
+        "CLM-INS-C",
+        [source_c],
+        claim_text="Deployment freeze begins 30 December for the billing migration.",
+    )
+    _create_claim("CLM-INS-NONE", [], claim_text="Claim without any evidence at all.")
+
+    with pytest.raises(PermissionError):
+        claim_insights.get_claim_insights("Incoming", PROJECT_ID)
+
+    before = claim_insights.get_claim_insights("Reviewer", PROJECT_ID)
+    assert ("warning", "Not validated") in before["CLM-INS-A"]["flags"]
+
+    validator.validate_project_claims("Reviewer", PROJECT_ID)
+    insights = claim_insights.get_claim_insights("Reviewer", PROJECT_ID)
+
+    conflicted = insights["CLM-INS-A"]
+    assert conflicted["attention"]
+    assert ("conflict", "Unresolved conflict") in conflicted["flags"]
+    assert "different value" in conflicted["reason"]
+    assert conflicted["open_conflicts"][0]["other_text"] == "Payment webhook owner is Alex Chen."
+    assert conflicted["open_conflicts"][0]["other_sources"] == ["ins-b.txt"]
+
+    weak = insights["CLM-INS-C"]
+    assert ("warning", "Weak evidence match") in weak["flags"]
+    assert "Single source" in weak["reason"] and "ins-c.txt" in weak["reason"]
+
+    claims = [
+        dict(row)
+        for row in database.get_connection().execute(
+            "SELECT claim_id, trust_status, validated_at FROM claims WHERE project_id = ?",
+            (PROJECT_ID,),
+        )
+    ]
+    summary = claim_insights.summarize_insights(claims, insights)
+    assert summary["CONFLICTING"] == 2
+    assert summary["weak_match"] >= 1
+    assert summary["unvalidated"] == 0
+    assert summary["attention"] >= 3
+
+
+def test_pickup_plan_orders_blockers_first_and_names_where_to_work() -> None:
+    import handover_plan
+
+    def claim(claim_id, claim_type, text, trust="VERIFIED", source="notes.md", location=None):
+        return {
+            "claim_id": claim_id,
+            "claim_type": claim_type,
+            "claim_text": text,
+            "trust_status": trust,
+            "evidence": [
+                {"file_name": source, "reference_location": location or f"{source} [Lines 1-3]"}
+            ],
+        }
+
+    claims = [
+        claim("C1", "Decision", "Use Redis for idempotency."),
+        claim("C2", "Owner", "Payment webhook owner is Priya Shah.", source="chat.txt"),
+        claim("C3", "Next action", "Rotate the webhook secret.", trust="SINGLE_SOURCE"),
+        claim("C4", "Blocker", "Legacy migration blocks the gateway.", source="tasks.csv"),
+        claim("C5", "Risk", "Retry storm may overload the API.", trust="CONFLICTING"),
+    ]
+    plan = handover_plan.build_pickup_plan(claims)
+
+    assert [step["claim_id"] for step in plan["steps"]] == ["C4", "C5", "C3", "C2"]
+    assert [horizon["name"] for horizon in plan["horizons"]] == ["Day 1", "Week 1"]
+    assert plan["steps"][1]["verb"] == "Settle which is right"
+    assert "C1" not in {step["claim_id"] for step in plan["steps"]}
+    assert plan["steps"][2]["confirm"] == "Only one source supports this. Confirm before acting."
+    assert plan["steps"][0]["confirm"] is None
+    assert plan["needs_confirmation"] == 2
+    assert plan["focus_sources"][0] == ("notes.md", 3)
+    assert [topic["title"] for topic in plan["topics"]] == [
+        "Start here",
+        "Know the risks",
+        "Who owns what",
+        "Decisions already made",
+    ]
+    assert handover_plan.build_pickup_plan([])["steps"] == []
+
+
+def test_private_demo_copies_are_complete_and_isolated(
+    isolated_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(source_parser, "UPLOADS_DIR", tmp_path / "uploads")
+    _token_a, copy_a = workspace.create_demo_copy()
+    _token_b, copy_b = workspace.create_demo_copy()
+    assert copy_a != copy_b != database.DEMO_PROJECT_ID
+
+    def counts(project_id: str) -> tuple[int, int, int]:
+        conn = database.get_connection()
+        try:
+            return (
+                conn.execute("SELECT COUNT(*) FROM sources WHERE project_id = ?", (project_id,)).fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM claims WHERE project_id = ?", (project_id,)).fetchone()[0],
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM evidence_chunks e
+                    JOIN sources s ON s.source_id = e.source_id WHERE s.project_id = ?
+                    """,
+                    (project_id,),
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    assert counts(copy_a) == counts(copy_b) == counts(database.DEMO_PROJECT_ID) == (8, 13, 17)
+
+    validator.validate_project_claims("Reviewer", copy_a)
+    claim_id = retrieval.get_visible_claims("Reviewer", copy_a)[0]["claim_id"]
+    permissions.perform_claim_review("Reviewer", claim_id, "APPROVED")
+
+    assert [c["review_status"] for c in retrieval.get_visible_claims("Reviewer", copy_b)].count("APPROVED") == 0
+    assert [c["review_status"] for c in retrieval.get_visible_claims("Reviewer", database.DEMO_PROJECT_ID)].count("APPROVED") == 0
+    # the restricted source stays restricted in every copy
+    names = {s["file_name"] for s in retrieval.get_visible_sources("Incoming", copy_a)}
+    assert "restricted_demo.txt" not in names
+
+
+def test_guided_tour_follows_the_real_state_to_the_final_acknowledgement(
+    isolated_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import judge_tour
+
+    monkeypatch.setattr(source_parser, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setenv("HANDOVERTRAIL_DISABLE_PROVIDERS", "1")
+    _token, project = workspace.create_demo_copy()
+
+    def current() -> str | None:
+        return judge_tour.build_tour(judge_tour.get_tour_state(project))["current"]
+
+    assert current() == "verify"
+    validator.validate_project_claims("Reviewer", project)
+    assert current() == "conflicts"
+
+    conflict = conflict_detection.get_conflict_records("Reviewer", project)[0]
+    conflict_detection.resolve_conflict("Reviewer", conflict["conflict_id"], "KEEP_A")
+    assert current() == "approve"
+
+    public_claim = next(
+        c["claim_id"]
+        for c in retrieval.get_visible_claims("Reviewer", project)
+        if c["claim_id"].startswith("CLM-R3-TASK")
+    )
+    permissions.perform_claim_review("Reviewer", public_claim, "APPROVED")
+    assert current() == "questions"
+
+    assert interviews.generate_questions("Reviewer", project) > 0
+    assert interviews.send_questions("Reviewer", project) > 0
+    assert current() == "answer"
+
+    question = interviews.get_questions("Departing", project)[0]
+    result = interviews.submit_answer(
+        "Departing", question["id"], "Priya Shah owns the payment webhook.", "public"
+    )
+    assert result["claims_created"] >= 1
+    assert current() == "approve_answer"
+
+    conn = database.get_connection()
+    answer_claims = [
+        row["claim_id"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT c.claim_id FROM claims c
+            JOIN claim_evidence ce ON ce.claim_id = c.claim_id
+            JOIN evidence_chunks e ON e.evidence_id = ce.evidence_id
+            JOIN sources s ON s.source_id = e.source_id
+            WHERE c.project_id = ? AND s.source_type = 'interview'
+            """,
+            (project,),
+        )
+    ]
+    conn.close()
+    for claim_id in answer_claims:
+        permissions.perform_claim_review("Reviewer", claim_id, "APPROVED")
+    assert current() == "release"
+
+    handover_release.release_handover("Reviewer", project)
+    assert current() == "incoming"
+    handover_release.acknowledge_latest_release("Incoming", project)
+
+    tour = judge_tour.build_tour(judge_tour.get_tour_state(project))
+    assert tour["complete"] and tour["done_required"] == tour["total_required"]
+    edit_step = next(step for step in tour["steps"] if step["key"] == "edit")
+    assert edit_step["optional"] and not edit_step["done"]

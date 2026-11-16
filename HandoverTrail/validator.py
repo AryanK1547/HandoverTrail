@@ -76,6 +76,15 @@ def validate_project_claims(role: str, project_id: str = "PROJ-DEMO-001") -> int
         conn.close()
 
 
+def refresh_project_validation(project_id: str) -> int:
+    """Recompute derived trust, conflict, and gap data after new evidence is stored.
+
+    This is a system recalculation, not a review decision: it writes no review or
+    audit rows and never changes a claim's review status.
+    """
+    return validate_project_claims("Admin", project_id)
+
+
 if __name__ == "__main__":
     count = validate_project_claims("Admin")
     print(f"Validation complete. Total claims evaluated and updated: {count}")

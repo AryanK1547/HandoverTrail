@@ -1,5 +1,21 @@
 # Changes from the Round 3 Plan
 
+> The full Round 2 → plan → delivered comparison, including what was not
+> built, is in `ROUND3_COMPARISON.md`. The test counts in the older sections
+> below are historical; the current local result is 57 backend tests and 5
+> browser journeys passing.
+
+## Added after the hardening pass (16 Nov 2026)
+
+- Guided tour page for judges and a one-click private demo copy (the plan's
+  stretch item R3-6, extended to the seeded demo).
+- Day 1 / Week 1 / Month 1 pick-up plan for Incoming (the plan's stretch item
+  R3-7), built by rules from claim type.
+- Review page restructured into Reconstruct, Verify, Review; verification
+  report with an evidence-match check; release summary with confirmation.
+- Not built from the plan: Git Handover bonus, comprehension check, optional
+  LLM slot extraction and question rewording.
+
 ## Delivered in code and covered locally
 
 - **Conflict and evidence-gap detection:** deterministic claim-slot comparison,
