@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from database import get_connection
 from permissions import require_role
 from conflict_detection import detect_project_conflicts
@@ -20,6 +22,7 @@ def validate_project_claims(role: str, project_id: str = "PROJ-DEMO-001") -> int
             (project_id,),
         ).fetchall()
         validated_count = 0
+        validated_at = datetime.now().isoformat()
         for claim in claims:
             claim_id = claim["claim_id"]
             evidence_count = cursor.execute(
@@ -61,10 +64,10 @@ def validate_project_claims(role: str, project_id: str = "PROJ-DEMO-001") -> int
             cursor.execute(
                 """
                 UPDATE claims
-                SET trust_status = ?, updated_at = CURRENT_TIMESTAMP
+                SET trust_status = ?, validated_at = ?, updated_at = ?
                 WHERE claim_id = ?
                 """,
-                (new_trust_status, claim_id),
+                (new_trust_status, validated_at, validated_at, claim_id),
             )
             validated_count += 1
         conn.commit()

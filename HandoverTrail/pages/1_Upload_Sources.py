@@ -8,7 +8,8 @@ import streamlit as st
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from database import PROJECT_ROOT, bootstrap, get_connection
+from database import DEMO_PROJECT_ID, PROJECT_ROOT, bootstrap, get_connection
+from permissions import can_review
 from retrieval import get_visible_evidence_chunks, get_visible_sources
 from source_parser import (
     parse_and_store_sources,
@@ -24,9 +25,15 @@ from ui import (
     sensitivity_badge,
     show_flash_toast,
 )
+from workspace import (
+    activate_demo_workspace,
+    activate_upload_workspace,
+    get_active_project_id,
+)
 
 configure_page("Connect sources · HandoverTrail")
 bootstrap()
+PROJECT_ID = get_active_project_id()
 
 role, counts = page_shell(
     1,
@@ -34,11 +41,35 @@ role, counts = page_shell(
     "Add meeting notes, chat exports, repository records, and task files.",
 )
 show_flash_toast()
+if PROJECT_ID == DEMO_PROJECT_ID:
+    st.info(
+        "Active workspace: Demo project. Saving uploaded files creates a separate "
+        "upload workspace; demo sources stay in the demo project."
+    )
+else:
+    st.caption(
+        f"Active workspace: Upload workspace {PROJECT_ID[-6:]}. It stays separate from "
+        "the demo and is restored by its workspace link."
+    )
+if not can_review(role):
+    st.info("Only Admin or Reviewer can add or parse sources.")
+    if role == "Departing":
+        st.page_link(
+            "pages/4_Exit_Interview.py",
+            label="Open your assigned interview",
+            query_params=dict(st.query_params),
+        )
+    else:
+        st.page_link(
+            "pages/3_Handover_View.py",
+            label="Go to the released handover",
+            query_params=dict(st.query_params),
+        )
+    footer()
+    st.stop()
 for upload_warning in st.session_state.pop("ui_upload_warnings", []):
     st.warning(upload_warning)
 render_stats_for_role(role, counts)
-
-PROJECT_ID = "PROJ-DEMO-001"
 
 demo_tab, upload_tab = st.tabs(["Load demo", "Upload files"])
 
@@ -52,6 +83,7 @@ with demo_tab:
             "Load pre-packaged demo files",
             type="primary",
         ):
+            PROJECT_ID = activate_demo_workspace()
             demo_dir = PROJECT_ROOT / "data" / "demo_project"
             conn = get_connection()
             try:
@@ -104,11 +136,18 @@ with demo_tab:
 with upload_tab:
     with st.container(border=True):
         st.subheader("Upload custom files")
-        st.caption("Accepted formats: .txt and .csv. Maximum size: 2 MB per file.")
+        st.caption(
+            "Accepted formats: .txt, .md, and .csv. Maximum size: 2 MB per file. "
+            "Uploads use a separate workspace; demo claims and evidence are not included."
+        )
+        if st.button("Start a new upload workspace"):
+            activate_upload_workspace(new_workspace=True)
+            st.toast("Started a separate upload workspace.")
+            st.rerun()
         with st.form("source_upload_form"):
             uploaded_files = st.file_uploader(
                 "Choose source files",
-                type=["txt", "csv"],
+                type=["txt", "md", "csv"],
                 accept_multiple_files=True,
             )
             sensitivity = st.selectbox(
@@ -123,6 +162,7 @@ with upload_tab:
             )
 
         if upload_submitted and uploaded_files:
+            PROJECT_ID = activate_upload_workspace()
             conn = get_connection()
             try:
                 cursor = conn.cursor()
@@ -153,7 +193,8 @@ with upload_tab:
                         cursor.execute(
                             """
                             UPDATE sources
-                            SET file_type = ?, uploaded_at = ?, sensitivity = ?
+                            SET file_type = ?, uploaded_at = ?, sensitivity = ?,
+                                source_type = 'upload'
                             WHERE source_id = ?
                             """,
                             (
@@ -168,8 +209,9 @@ with upload_tab:
                         cursor.execute(
                             """
                             INSERT INTO sources
-                                (source_id, project_id, file_name, file_type, uploaded_at, sensitivity)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                                (source_id, project_id, file_name, file_type, uploaded_at,
+                                 sensitivity, source_type)
+                            VALUES (?, ?, ?, ?, ?, ?, 'upload')
                             """,
                             (
                                 source_id,
@@ -204,7 +246,7 @@ with upload_tab:
             for message in rejected_files:
                 st.warning(message)
         elif upload_submitted:
-            st.info("Choose at least one .txt or .csv file to upload.")
+            st.info("Choose at least one .txt, .md, or .csv file to upload.")
 
 st.subheader("Current sources")
 sources = get_visible_sources(role, PROJECT_ID)
@@ -217,7 +259,7 @@ if sources:
 else:
     empty_state(
         "No sources are available for this role yet.",
-        "Load the synthetic demo or upload a .txt or .csv file.",
+        "Load the synthetic demo or upload a .txt, .md, or .csv file.",
     )
 
 with st.container(border=True):
@@ -233,7 +275,33 @@ with st.container(border=True):
 st.subheader("Evidence excerpts")
 evidence_rows = get_visible_evidence_chunks(role, PROJECT_ID)
 if evidence_rows:
-    for evidence in evidence_rows:
+    source_names = sorted({row["file_name"] for row in evidence_rows})
+    source_filter = st.selectbox(
+        "Evidence source",
+        ["All sources", *source_names],
+        key=f"evidence_source_{PROJECT_ID}",
+    )
+    if source_filter != "All sources":
+        evidence_rows = [
+            row for row in evidence_rows if row["file_name"] == source_filter
+        ]
+    page_size = st.selectbox(
+        "Excerpts per page",
+        [10, 25, 50],
+        key=f"evidence_page_size_{PROJECT_ID}",
+    )
+    page_count = max(1, (len(evidence_rows) + page_size - 1) // page_size)
+    page_number = st.selectbox(
+        "Evidence page",
+        range(1, page_count + 1),
+        key=f"evidence_page_{PROJECT_ID}_{source_filter}_{page_size}_{len(evidence_rows)}",
+    )
+    start = (page_number - 1) * page_size
+    st.caption(
+        f"Showing {start + 1}–{min(start + page_size, len(evidence_rows))} "
+        f"of {len(evidence_rows)} excerpts."
+    )
+    for evidence in evidence_rows[start : start + page_size]:
         with st.expander(
             f"{evidence['file_name']} · {evidence['reference_location'] or 'Source excerpt'}"
         ):

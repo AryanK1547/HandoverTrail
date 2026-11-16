@@ -1,4 +1,7 @@
+import hashlib
 import json
+import os
+import re
 import uuid
 from datetime import datetime
 from typing import Callable, Iterable
@@ -12,14 +15,99 @@ from provider_gateway import (
 GEMINI_MODEL = "gemini-3.6-flash"
 OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
+
+def _normalize_claim_text(value: str) -> str:
+    text = re.sub(r"^\s*```(?:markdown|md)?\s*", "", value, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+    text = re.sub(r"^\s*#{1,6}\s*", "", text)
+    text = re.sub(r"^\s*[-*+]\s+", "", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", text)
+    text = text.replace("`", "")
+    return " ".join(text.split()).strip()
+
+
+def _extraction_key(
+    project_id: str,
+    claim_text: str,
+    claim_type: str,
+    evidence_ids: set[str],
+) -> str:
+    stable_content = json.dumps(
+        [
+            project_id,
+            _normalize_claim_text(claim_text).casefold(),
+            claim_type,
+            sorted(evidence_ids),
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(stable_content.encode("utf-8")).hexdigest()
+
+
+def _record_extraction_run(
+    conn,
+    project_id: str,
+    status: str,
+    method: str,
+    claims_created: int,
+    fallback_reason: str | None,
+    masked_values: int,
+    source_ids: Iterable[str],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO extraction_runs
+            (run_id, project_id, status, method, claims_created, fallback_reason,
+             masked_values, source_ids_json, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"EXR-{uuid.uuid4().hex[:12].upper()}",
+            project_id,
+            status,
+            method,
+            claims_created,
+            fallback_reason,
+            masked_values,
+            json.dumps(sorted(set(source_ids))),
+            datetime.now().isoformat(),
+        ),
+    )
+
+
+def get_latest_extraction_run(project_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT status, method, claims_created, fallback_reason, masked_values,
+                   source_ids_json, completed_at
+            FROM extraction_runs
+            WHERE project_id = ?
+            ORDER BY completed_at DESC, run_id DESC
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["source_ids"] = json.loads(result.pop("source_ids_json"))
+        result["project_id"] = project_id
+        return result
+    finally:
+        conn.close()
+
+
 def _parse_claims(response_text: str, valid_evidence_ids: set) -> dict:
     if not response_text:
         raise ValueError("The provider returned an empty response.")
 
     clean_json = response_text.strip()
-    if clean_json.startswith("```"):
-        clean_json = clean_json.removeprefix("```json").removeprefix("```")
-        clean_json = clean_json.removesuffix("```").strip()
+    clean_json = re.sub(r"^```(?:json)?\s*", "", clean_json, flags=re.IGNORECASE)
+    clean_json = re.sub(r"\s*```$", "", clean_json)
 
     extracted = json.loads(clean_json)
     if isinstance(extracted, dict):
@@ -38,8 +126,9 @@ def _parse_claims(response_text: str, valid_evidence_ids: set) -> dict:
         claim_text = item.get("claim_text")
         claim_type = item.get("claim_type", "Decision")
         evidence_ids = item.get("evidence_ids")
-        if not isinstance(claim_text, str) or not claim_text.strip():
+        if not isinstance(claim_text, str) or not _normalize_claim_text(claim_text):
             raise ValueError("The provider returned a claim without valid claim_text.")
+        claim_text = _normalize_claim_text(claim_text)
         if claim_type not in valid_claim_types:
             raise ValueError(f"The provider returned an invalid claim_type for claim: {claim_text}.")
         if not isinstance(evidence_ids, list) or not all(
@@ -76,38 +165,84 @@ def _merge_claims(target: dict, additions: dict) -> None:
 
 
 def _heuristic_claims(chunks: list, method: str) -> dict:
-    heuristic_groups = {
-        "Decision": [],
-        "Owner": [],
-        "Blocker": [],
-        "Next action": [],
-    }
-    for chunk in chunks:
-        text = chunk["excerpt"].lower()
-        evidence_id = chunk["evidence_id"]
-        raw_text = chunk["excerpt"]
-        if any(word in text for word in ["decid", "decis", "confirm", "will use", "architecture", "database"]):
-            heuristic_groups["Decision"].append((evidence_id, raw_text))
-        elif any(word in text for word in ["owner", "assign", "task-", "responsible", "takes"]):
-            heuristic_groups["Owner"].append((evidence_id, raw_text))
-        elif any(word in text for word in ["block", "risk", "fail", "issue", "depend"]):
-            heuristic_groups["Blocker"].append((evidence_id, raw_text))
-        elif any(word in text for word in ["todo", "next", "pending", "action"]):
-            heuristic_groups["Next action"].append((evidence_id, raw_text))
-
+    rules = (
+        (
+            "Decision",
+            re.compile(
+                r"\b(?:decisions?|decid\w*|confirm\w*|select\w*|chose|chosen|"
+                r"approved|will use|will adopt)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "Owner",
+            re.compile(
+                r"\b(?:owner\s*(?:is|:|=)|assigned to|responsible for|owns?|"
+                r"takes ownership of)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "Blocker",
+            re.compile(
+                r"\b(?:blocked|blocker|blocking|cannot proceed|unable to proceed)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "Risk",
+            re.compile(
+                r"\b(?:risk|may fail|might fail|could fail|failure mode)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "Dependency",
+            re.compile(
+                r"\b(?:depends? on|dependent on|dependencies?)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "Next action",
+            re.compile(
+                r"\b(?:next step|next action|action item|to-?do|pending action)\b",
+                re.IGNORECASE,
+            ),
+        ),
+    )
     claims = {}
-    for claim_type, items in heuristic_groups.items():
-        if not items:
-            continue
-        sample_text = " | ".join(
-            item[1][:50].strip() + "..." for item in items[:3]
-        )
-        claim_text = f"Project {claim_type.lower()} identified: {sample_text}"
-        claims[claim_text] = {
-            "claim_type": claim_type,
-            "evidence_ids": {item[0] for item in items},
-            "claim_source": method,
-        }
+    claim_keys = {}
+    for chunk in chunks:
+        statements = re.split(r"(?<=[.!?;])\s+|\r?\n+", chunk["excerpt"])
+        for raw_statement in statements:
+            if raw_statement.strip().endswith("?"):
+                continue
+            claim_text = _normalize_claim_text(raw_statement)
+            if not claim_text:
+                continue
+            claim_type = next(
+                (
+                    candidate_type
+                    for candidate_type, pattern in rules
+                    if pattern.search(claim_text)
+                ),
+                None,
+            )
+            if claim_type is None:
+                continue
+
+            key = claim_text.casefold()
+            existing = claim_keys.get(key)
+            if existing is None:
+                claims[claim_text] = {
+                    "claim_type": claim_type,
+                    "evidence_ids": {chunk["evidence_id"]},
+                    "claim_source": method,
+                }
+                claim_keys[key] = claim_text
+            else:
+                claims[existing]["evidence_ids"].add(chunk["evidence_id"])
     return claims
 
 
@@ -127,7 +262,8 @@ def extract_claims_from_evidence(
     cursor = conn.cursor()
 
     query = """
-        SELECT e.evidence_id, e.excerpt, e.reference_location, s.file_name, s.sensitivity
+        SELECT e.evidence_id, e.source_id, e.excerpt, e.reference_location,
+               s.file_name, s.sensitivity
         FROM evidence_chunks e
         JOIN sources s ON e.source_id = s.source_id
         WHERE s.project_id = ?
@@ -148,8 +284,19 @@ def extract_claims_from_evidence(
     chunks = cursor.fetchall()
 
     if not chunks:
-        conn.close()
         report_progress(100, "No evidence found. Parse source files before extracting claims.")
+        _record_extraction_run(
+            conn,
+            project_id,
+            "error",
+            "Not run",
+            0,
+            "No evidence chunks found. Parse files before extracting claims.",
+            0,
+            selected_source_ids or (),
+        )
+        conn.commit()
+        conn.close()
         return {"status": "error", "message": "No evidence chunks found for extraction. Please parse files first."}
 
     public_chunks = [chunk for chunk in chunks if chunk["sensitivity"] == "public"]
@@ -159,13 +306,19 @@ def extract_claims_from_evidence(
     provider_note = None
     gemini_error = None
     provider_succeeded = False
+    providers_disabled = os.environ.get("HANDOVERTRAIL_DISABLE_PROVIDERS", "").casefold() in {
+        "1",
+        "true",
+        "yes",
+    }
     public_evidence_ids = {chunk["evidence_id"] for chunk in public_chunks}
-    masked_values = (
-        build_provider_payload(public_chunks)["masked_values"]
-        if public_chunks
-        and any(key and key.strip() for key in (api_key, openrouter_api_key))
-        else 0
-    )
+    provider_payload_error = None
+    masked_values = 0
+    if public_chunks and any(key and key.strip() for key in (api_key, openrouter_api_key)):
+        try:
+            masked_values = build_provider_payload(public_chunks)["masked_values"]
+        except ValueError as exc:
+            provider_payload_error = str(exc)
     report_progress(
         15,
         f"Loaded {len(chunks)} evidence chunks; only {len(public_chunks)} public chunks may go to providers.",
@@ -175,6 +328,12 @@ def extract_claims_from_evidence(
     if not public_chunks:
         gemini_error = "No public evidence is available for provider extraction."
         report_progress(35, gemini_error)
+    elif providers_disabled:
+        gemini_error = "Provider calls are disabled for this app run."
+        report_progress(35, gemini_error)
+    elif provider_payload_error:
+        gemini_error = provider_payload_error
+        report_progress(35, f"Provider extraction skipped: {gemini_error}")
     elif not api_key or not api_key.strip():
         gemini_error = "GEMINI_API_KEY is not configured in Streamlit secrets."
         report_progress(35, f"Gemini skipped: {gemini_error}")
@@ -207,6 +366,12 @@ def extract_claims_from_evidence(
     if not provider_succeeded:
         if not public_chunks:
             openrouter_error = "OpenRouter skipped because no public evidence is available."
+            report_progress(62, openrouter_error)
+        elif providers_disabled:
+            openrouter_error = "OpenRouter skipped because provider calls are disabled."
+            report_progress(62, openrouter_error)
+        elif provider_payload_error:
+            openrouter_error = f"OpenRouter skipped: {provider_payload_error}"
             report_progress(62, openrouter_error)
         elif not openrouter_api_key or not openrouter_api_key.strip():
             openrouter_error = "OPENROUTER_API_KEY is not configured in Streamlit secrets."
@@ -261,41 +426,40 @@ def extract_claims_from_evidence(
 
     report_progress(88, f"Saving {len(claims_dict)} extracted claims...")
 
-    if selected_source_ids is None:
-        # Full-project re-runs replace prior candidates; scoped runs append interview claims.
-        cursor.execute(
-            """
-            DELETE FROM claim_evidence
-            WHERE claim_id IN (SELECT claim_id FROM claims WHERE project_id = ?)
-            """,
-            (project_id,),
-        )
-        cursor.execute("DELETE FROM claims WHERE project_id = ?", (project_id,))
-
     created_count = 0
     now = datetime.now().isoformat()
 
     for text, data in claims_dict.items():
+        text = _normalize_claim_text(text)
         if not data["evidence_ids"]:
             continue
-            
-        claim_id = f"CLM-{uuid.uuid4().hex[:8].upper()}"
-        cursor.execute("""
-            INSERT INTO claims
-                (claim_id, project_id, claim_text, claim_type, trust_status, claim_source,
-                 review_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            claim_id,
+
+        extraction_key = _extraction_key(
             project_id,
             text,
             data["claim_type"],
-            "SINGLE_SOURCE",
-            data["claim_source"],
-            "PENDING",
-            now,
-            now,
-        ))
+            data["evidence_ids"],
+        )
+        claim_id = f"CLM-{uuid.uuid4().hex[:8].upper()}"
+        cursor.execute("""
+            INSERT OR IGNORE INTO claims
+                (claim_id, project_id, claim_text, claim_type, trust_status, claim_source,
+                 review_status, extraction_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                claim_id,
+                project_id,
+                text,
+                data["claim_type"],
+                "SINGLE_SOURCE",
+                data["claim_source"],
+                "PENDING",
+                extraction_key,
+                now,
+                now,
+            ))
+        if cursor.rowcount == 0:
+            continue
 
         for evd_id in data["evidence_ids"]:
             cursor.execute("""
@@ -304,6 +468,21 @@ def extract_claims_from_evidence(
             """, (claim_id, evd_id))
         created_count += 1
 
+    run_source_ids = (
+        selected_source_ids
+        if selected_source_ids is not None
+        else {chunk["source_id"] for chunk in chunks}
+    )
+    _record_extraction_run(
+        conn,
+        project_id,
+        "success",
+        extraction_method,
+        created_count,
+        provider_note,
+        masked_values,
+        run_source_ids,
+    )
     conn.commit()
     conn.close()
     report_progress(100, f"Finished: {created_count} claims created using {extraction_method}.")

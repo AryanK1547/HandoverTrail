@@ -4,13 +4,15 @@ import uuid
 import streamlit as st
 
 from database import bootstrap, get_connection
+from permissions import can_review
 from source_parser import parse_and_store_sources
 from ui import configure_page, footer, page_shell
+from workspace import activate_demo_workspace
 
 configure_page("HandoverTrail")
 bootstrap()
 
-page_shell(
+role, _counts = page_shell(
     1,
     "HandoverTrail",
     "Turn scattered project files into a clear, evidence-linked handover.",
@@ -22,10 +24,13 @@ with st.container(border=True):
         "Reviewers assess claims against source evidence. Incoming teammates see "
         "approved context supported only by sources they can access."
     )
-    st.caption("Synthetic demo data is available so you can explore without uploading project files.")
+    st.caption(
+        "Synthetic demo data is available. Custom uploads run in a separate workspace "
+        "identified by its link."
+    )
 
-    if st.button("Load demo project", type="primary"):
-        project_id = "PROJ-DEMO-001"
+    if can_review(role) and st.button("Load demo project", type="primary"):
+        project_id = activate_demo_workspace()
         demo_dir = Path(__file__).resolve().parent / "data" / "demo_project"
         conn = get_connection()
         try:
@@ -69,21 +74,40 @@ with st.container(border=True):
             f"Demo project ready: {added} sources registered and {chunks} new evidence "
             "excerpts loaded. Cached claims are available in Review Claims."
         )
+    elif not can_review(role):
+        st.caption("Admin or Reviewer can load the synthetic demo workspace.")
 
 with st.container(border=True):
-    st.subheader("Try it in 2 minutes")
-    steps = st.columns(3)
-    for column, number, instruction in zip(
-        steps,
-        ("1", "2", "3"),
-        (
-            "Connect synthetic or custom sources.",
-            "Inspect evidence-linked claims and review them.",
-            "Switch to Incoming and view permitted handover context.",
-        ),
-    ):
-        with column:
-            st.markdown(f"**{number}.** {instruction}")
+    if role == "Incoming":
+        st.subheader("Your next step")
+        st.write("Open the latest snapshot released by the Reviewer.")
+        st.page_link(
+            "pages/3_Handover_View.py",
+            label="Open released handover",
+            query_params=dict(st.query_params),
+        )
+    elif role == "Departing":
+        st.subheader("Your next step")
+        st.write("Answer only the exit-interview questions assigned to you.")
+        st.page_link(
+            "pages/4_Exit_Interview.py",
+            label="Open assigned interview",
+            query_params=dict(st.query_params),
+        )
+    else:
+        st.subheader("Try it in 2 minutes")
+        steps = st.columns(3)
+        for column, number, instruction in zip(
+            steps,
+            ("1", "2", "3"),
+            (
+                "Choose the synthetic demo or create a separate upload workspace.",
+                "Extract, validate, and review evidence-linked claims.",
+                "Release a fixed handover snapshot for Incoming.",
+            ),
+        ):
+            with column:
+                st.markdown(f"**{number}.** {instruction}")
 
 st.caption(
     "Every claim links to source evidence. Restricted sources stay hidden from Incoming. "

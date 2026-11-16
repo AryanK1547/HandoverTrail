@@ -19,11 +19,12 @@ from interviews import (
 )
 from permissions import can_review, normalize_role
 from ui import configure_page, empty_state, footer, page_shell, show_flash_toast
+from workspace import get_active_project_id
 
 configure_page("Exit interview · HandoverTrail")
 bootstrap()
+PROJECT_ID = get_active_project_id()
 
-PROJECT_ID = "PROJ-DEMO-001"
 user_role, _counts = page_shell(
     5,
     "Exit interview",

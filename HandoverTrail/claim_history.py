@@ -64,7 +64,8 @@ def edit_claim(role: str, claim_id: str, new_text: str, reason: str) -> int:
         conn.execute(
             """
             UPDATE claims
-            SET claim_text = ?, review_status = 'EDITED_PENDING_REVIEW', updated_at = ?
+            SET claim_text = ?, review_status = 'EDITED_PENDING_REVIEW',
+                validated_at = NULL, updated_at = ?
             WHERE claim_id = ?
             """,
             (claim_text, now, claim_id),

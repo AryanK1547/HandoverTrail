@@ -7,6 +7,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("HANDOVERTRAIL_DB", PROJECT_ROOT / "handovertrail.db")).expanduser()
+DEMO_PROJECT_ID = "PROJ-DEMO-001"
 
 
 def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
@@ -88,6 +89,8 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         trust_status TEXT NOT NULL CHECK(trust_status IN ('VERIFIED', 'SINGLE_SOURCE', 'CONFLICTING', 'MISSING_EVIDENCE')),
         claim_source TEXT NOT NULL DEFAULT 'generated',
         review_status TEXT NOT NULL CHECK(review_status IN ('PENDING', 'APPROVED', 'REJECTED', 'EDITED_PENDING_REVIEW')),
+        validated_at TEXT,
+        extraction_key TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -156,6 +159,20 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         normalized_value TEXT NOT NULL,
         PRIMARY KEY (claim_id, subject, attribute, value),
         FOREIGN KEY (claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS extraction_runs (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('success', 'error')),
+        method TEXT NOT NULL,
+        claims_created INTEGER NOT NULL DEFAULT 0,
+        fallback_reason TEXT,
+        masked_values INTEGER NOT NULL DEFAULT 0,
+        source_ids_json TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     );
     """)
     cursor.execute("""
@@ -292,6 +309,17 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         cursor.execute(
             "ALTER TABLE claims ADD COLUMN claim_source TEXT NOT NULL DEFAULT 'generated'"
         )
+    if "validated_at" not in claim_columns:
+        cursor.execute("ALTER TABLE claims ADD COLUMN validated_at TEXT")
+    if "extraction_key" not in claim_columns:
+        cursor.execute("ALTER TABLE claims ADD COLUMN extraction_key TEXT")
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS claims_extraction_key_unique
+        ON claims(extraction_key)
+        WHERE extraction_key IS NOT NULL
+        """
+    )
 
     now = datetime.now().isoformat()
     cursor.executemany("""
@@ -313,7 +341,7 @@ def bootstrap(db_path: str | Path | None = None) -> None:
         INSERT OR IGNORE INTO projects (project_id, name, description, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
     """, (
-        "PROJ-DEMO-001",
+        DEMO_PROJECT_ID,
         "Demo Project (Team Techtones)",
         "HandoverTrail MVP Demonstration Project",
         now,
@@ -329,7 +357,7 @@ def bootstrap(db_path: str | Path | None = None) -> None:
 
 
 def _seed_empty_demo_database(db_path: str | Path | None = None) -> None:
-    project_id = "PROJ-DEMO-001"
+    project_id = DEMO_PROJECT_ID
     conn = get_connection(db_path)
     source_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
     evidence_count = conn.execute("SELECT COUNT(*) FROM evidence_chunks").fetchone()[0]
@@ -378,7 +406,7 @@ def _seed_empty_demo_database(db_path: str | Path | None = None) -> None:
 def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
     cache_path = PROJECT_ROOT / "data" / "demo_cache" / "claims.json"
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    project_id = "PROJ-DEMO-001"
+    project_id = DEMO_PROJECT_ID
     if cache.get("project_id") != project_id:
         raise ValueError(f"Cached claims must target {project_id}.")
 

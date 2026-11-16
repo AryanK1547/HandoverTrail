@@ -1,4 +1,5 @@
 import csv
+import os
 import re
 import uuid
 from datetime import datetime
@@ -9,7 +10,9 @@ from typing import Iterable
 from database import PROJECT_ROOT, get_connection
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
-UPLOADS_DIR = PROJECT_ROOT / "uploads"
+UPLOADS_DIR = Path(
+    os.environ.get("HANDOVERTRAIL_UPLOADS_DIR", PROJECT_ROOT / "uploads")
+).expanduser()
 
 
 def sanitize_upload_filename(name: str) -> str:
@@ -18,8 +21,8 @@ def sanitize_upload_filename(name: str) -> str:
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", safe_name)
     if safe_name in {"", ".", ".."}:
         raise ValueError("Please choose a file with a valid name.")
-    if Path(safe_name).suffix.lower() not in {".txt", ".csv"}:
-        raise ValueError("Only .txt and .csv files are supported.")
+    if Path(safe_name).suffix.lower() not in {".txt", ".md", ".csv"}:
+        raise ValueError("Only .txt, .md, and .csv files are supported.")
     return safe_name
 
 
@@ -131,7 +134,7 @@ def parse_and_store_sources(
                         f"{file_name} [Row {row_index}: {task_id}]",
                         datetime.now().isoformat(),
                     ))
-            elif suffix == ".txt":
+            elif suffix in {".txt", ".md"}:
                 lines = [line.strip() for line in text.splitlines() if line.strip()]
                 window_size = 3
                 for chunk_index, start in enumerate(range(0, len(lines), window_size)):
@@ -145,7 +148,9 @@ def parse_and_store_sources(
                         datetime.now().isoformat(),
                     ))
             else:
-                raise ValueError(f"Unsupported source type for {file_name!r}; use .txt or .csv.")
+                raise ValueError(
+                    f"Unsupported source type for {file_name!r}; use .txt, .md, or .csv."
+                )
 
             cursor.execute("DELETE FROM evidence_chunks WHERE source_id = ?", (source_id,))
             if chunks:
