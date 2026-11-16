@@ -159,7 +159,7 @@ not a login.
 
 ## Workflow and navigation hardening (16 Nov 2026, local only)
 
-Local run on `r3/ux-hardening`, not pushed or deployed. `pytest -q tests`:
+Local run on `r3/ux-hardening` (later merged into `main` as `106d76e`). `pytest -q tests`:
 **52 passed**. `npm run test:e2e`: **4 passed** (Chromium, temporary SQLite and
 upload storage, provider calls disabled). No Gemini or OpenRouter request was
 made, and the public Cloud app was not touched.
@@ -216,3 +216,22 @@ Verification: `pytest -q tests` 55 passed; `npm run test:e2e` 4 passed.
 Later the same day, after adding the guided tour, private demo copies, and the
 Day 1 / Week 1 / Month 1 plan: `pytest -q tests` **57 passed**;
 `npm run test:e2e` **5 passed** (new: `guided-tour.spec.ts`).
+
+## Live verification of `main` at `106d76e` (16 Nov 2026)
+
+A scripted Chromium (Playwright) run against
+`https://handovertrail-aryankhode.streamlit.app/`, whose footer showed
+`106d76e`. It used a private demo copy and clicked through: validate evidence
+links, resolve a conflict, approve claims, generate and send exit-interview
+questions, answer as Departing, approve the claim built from the answer, release
+version 1, read the pick-up plan as Incoming, and acknowledge. The guided tour
+then showed 9 of 9 steps complete. It also confirmed: the restricted file never
+appeared for Incoming, Incoming's sidebar listed only Overview, Guided tour and
+Release and handover, Incoming's Upload Sources page had no upload controls,
+Departing opening the handover page raised no error, and the upload page
+states a single 2 MB limit.
+
+Not done on the live site: AI extraction (not clicked, to spare the free-tier
+quota), user uploads, Firefox and WebKit, and restart behavior. A first load
+shortly after the merge briefly showed an `ImportError` and recovered on the
+next load; the cause was not confirmed.

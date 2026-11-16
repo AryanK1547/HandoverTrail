@@ -3,9 +3,11 @@
 ## Live-demo risks
 
 The findings in this section describe deployed commit `839953b` as checked on
-13 Nov 2026. The `r3/ux-hardening` worktree contains local mitigations, but it
-has not been pushed or deployed; the public URL still runs the previously
-checked code.
+13 Nov 2026. The mitigations were merged into `main` (`106d76e`) and a scripted
+live check on 16 Nov 2026 confirmed these are fixed on the live site:
+Incoming sees no upload or review controls, the upload page states one 2 MB
+limit, and a role chosen in the URL survives a refresh. The role selector is
+still not authentication, and the other items below still apply.
 
 - **The demo role selector is not authentication.** Anyone can select Admin or
   Reviewer. A full browser refresh reset the selected role to Admin in the

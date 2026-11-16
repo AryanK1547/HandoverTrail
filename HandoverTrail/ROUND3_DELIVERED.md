@@ -96,7 +96,10 @@ write controls, and local Cloud storage is not durable.
 
 ## Cross-cutting status
 
-- Merged `main` and the live footer both identified `839953b`
+- Update, 16 Nov 2026: `main` is now `106d76e` and the live footer reported the
+  same commit. A scripted run of the full journey on the live site passed (see
+  `TESTING.md`). The note below describes the earlier 13 Nov check, when `main`
+  and the live footer both identified `839953b`
   (`839953ba1c7a79f3d31e99601fe5db7ebeb6c5b5`).
 - Local suite: **36 passed**; no real provider requests.
 - The complete Cloud judge journey was **not** completed. See

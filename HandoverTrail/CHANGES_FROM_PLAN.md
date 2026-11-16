@@ -50,8 +50,9 @@
   Chromium browser; test data is temporary and provider calls are disabled.
 - Verification on this branch: pytest **40 passed**, Playwright **3 passed**,
   Python compilation passed, and `git diff --check` passed.
-- These hardening changes are local to `r3/ux-hardening` and are not deployed.
-  The deployed findings below still describe commit `839953b`.
+- These hardening changes were later merged into `main` (`106d76e`) and are
+  live; see the README for the 16 Nov 2026 live check. The deployed findings
+  below describe the earlier commit `839953b`.
 
 ## Deviations and remaining work
 
