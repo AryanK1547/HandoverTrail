@@ -63,3 +63,10 @@ checked code.
 - Local Playwright covers two upload workspaces in sequence, not simultaneous
   concurrent users. It runs against temporary local SQLite storage, not
   Streamlit Community Cloud.
+- A conflict resolution (Keep A, Keep B, Keep both) is an audited note only.
+  It does not approve or reject either claim, and both keep their
+  "Conflicting" trust label; the reviewer still decides each claim separately.
+  The release summary counts unresolved conflicts but does not block a release.
+- Evidence validation now runs automatically after extraction and after an
+  exit-interview answer. It recomputes derived trust, conflict, and gap records
+  for the whole workspace and writes no review or audit rows.

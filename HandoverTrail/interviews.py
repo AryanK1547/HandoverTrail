@@ -87,7 +87,8 @@ def generate_questions(role: str, project_id: str) -> int:
             if not template:
                 continue
             question_id = f"Q-{uuid.uuid4().hex[:12].upper()}"
-            question_text = template.format(subject=gap["subject"] or "this project detail")
+            subject = (gap["subject"] or "").strip().rstrip(".;:!?").strip()
+            question_text = template.format(subject=subject or "this project detail")
             conn.execute(
                 """
                 INSERT INTO questions
@@ -452,6 +453,13 @@ def submit_answer(
             now,
         )
         conn.commit()
+        try:
+            from validator import refresh_project_validation
+
+            refresh_project_validation(project_id)
+        except Exception:
+            # The answer and its claims are saved; a reviewer can re-run validation.
+            pass
         return {
             "answer_id": answer_id,
             "source_id": source_id,

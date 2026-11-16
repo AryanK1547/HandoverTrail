@@ -5,13 +5,13 @@ test("reviewer can validate, find claims, and resume after refresh", async ({ pa
   await page.getByRole("link", { name: "Review", exact: true }).click();
 
   await page.getByRole("button", { name: "Validate evidence links" }).click();
-  await expect(page.getByText("Evidence checked", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/Last verified/)).toBeVisible();
   await expect(page.getByText(/Extraction complete/i)).toHaveCount(0);
 
   await page.getByLabel("Search claim text").fill("Stripe");
   await page.getByLabel("Search claim text").press("Enter");
   await expect(page.getByText(/Showing claims 1–3 of 3 matching 13 total/)).toBeVisible();
-  await expect(page.getByText("Evidence checked", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/Last verified/)).toBeVisible();
 
   const workspaceUrl = page.url();
   await page.reload();

@@ -8,3 +8,7 @@ font = "sans serif"
 
 [client]
 toolbarMode = "minimal"
+showSidebarNavigation = false
+
+[server]
+maxUploadSize = 2

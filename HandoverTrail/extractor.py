@@ -86,7 +86,7 @@ def get_latest_extraction_run(project_id: str) -> dict | None:
                    source_ids_json, completed_at
             FROM extraction_runs
             WHERE project_id = ?
-            ORDER BY completed_at DESC, run_id DESC
+            ORDER BY completed_at DESC, rowid DESC
             LIMIT 1
             """,
             (project_id,),
@@ -214,7 +214,14 @@ def _heuristic_claims(chunks: list, method: str) -> dict:
     claims = {}
     claim_keys = {}
     for chunk in chunks:
-        statements = re.split(r"(?<=[.!?;])\s+|\r?\n+", chunk["excerpt"])
+        # A line labelled as a question (for example the prompt stored with an
+        # interview answer) is context, never a candidate claim.
+        statements = [
+            statement
+            for line in chunk["excerpt"].splitlines()
+            if not re.match(r"\s*question\s*:", line, re.IGNORECASE)
+            for statement in re.split(r"(?<=[.!?;])\s+", line)
+        ]
         for raw_statement in statements:
             if raw_statement.strip().endswith("?"):
                 continue

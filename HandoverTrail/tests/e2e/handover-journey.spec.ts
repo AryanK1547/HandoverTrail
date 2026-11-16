@@ -4,7 +4,7 @@ test("reviewer releases a cited handover and Incoming acknowledges it", async ({
   await page.goto("/?workspace=demo&role=Reviewer");
   await page.getByRole("link", { name: "Review", exact: true }).click();
   await page.getByRole("button", { name: "Validate evidence links" }).click();
-  await expect(page.getByText("Evidence checked", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/Last verified/)).toBeVisible();
 
   await page.getByLabel("Search claim text").fill("Payment webhook owner is Alex Chen");
   await page.getByLabel("Search claim text").press("Enter");
@@ -13,13 +13,22 @@ test("reviewer releases a cited handover and Incoming acknowledges it", async ({
   await expect(page.getByRole("button", { name: "Approve claim" })).toHaveCount(0);
   await page.reload();
   await expect(page.getByText("1 approved", { exact: true })).toBeVisible();
+  await page.getByText("Approved (1)", { exact: true }).click();
   await page.getByLabel("Search claim text").fill("Payment webhook owner is Alex Chen");
   await page.getByLabel("Search claim text").press("Enter");
   await expect(page.getByText(/Showing claims 1–1 of 1 matching 13 total/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve claim" })).toHaveCount(0);
   await page.getByRole("link", { name: "Handover", exact: true }).click();
   await page.getByRole("button", { name: "Release current approved handover" }).click();
+  await expect(page.getByText(/Release version 1 to the Incoming role/)).toBeVisible();
+  await page.getByRole("button", { name: "Confirm release" }).click();
   await expect(page.getByText(/Latest release: version 1/)).toBeVisible();
+  await expect(
+    page.getByText(/Version 1 already contains the current approved claims/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Release current approved handover" }),
+  ).toBeDisabled();
 
   await page.goto("/Handover_View?workspace=demo&role=Incoming");
   await expect(

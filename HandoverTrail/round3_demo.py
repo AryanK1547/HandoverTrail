@@ -31,7 +31,10 @@ _DEMO_CLAIMS = (
 )
 
 
-def seed_conflict_demo(db_path: str | Path | None = None) -> None:
+def seed_conflict_demo(
+    db_path: str | Path | None = None,
+    project_id: str = PROJECT_ID,
+) -> None:
     """Idempotently add the small synthetic Round 3 conflict/gap fixture."""
     demo_dir = PROJECT_ROOT / "data" / "demo_project"
     conn = get_connection(db_path)
@@ -40,7 +43,7 @@ def seed_conflict_demo(db_path: str | Path | None = None) -> None:
         for file_name in ("r3_conflicts_a.txt", "r3_conflicts_b.txt", "r3_gaps.txt"):
             source = conn.execute(
                 "SELECT source_id FROM sources WHERE project_id = ? AND file_name = ?",
-                (PROJECT_ID, file_name),
+                (project_id, file_name),
             ).fetchone()
             if source:
                 source_id = source["source_id"]
@@ -52,7 +55,7 @@ def seed_conflict_demo(db_path: str | Path | None = None) -> None:
                         (source_id, project_id, file_name, file_type, uploaded_at, sensitivity, source_type)
                     VALUES (?, ?, ?, 'TXT', ?, 'public', 'source')
                     """,
-                    (source_id, PROJECT_ID, file_name, datetime.now().isoformat()),
+                    (source_id, project_id, file_name, datetime.now().isoformat()),
                 )
             source_ids.append(source_id)
         conn.commit()
@@ -75,7 +78,7 @@ def seed_conflict_demo(db_path: str | Path | None = None) -> None:
         from source_parser import parse_and_store_sources
 
         parse_and_store_sources(
-            PROJECT_ID,
+            project_id,
             source_ids=unparsed_ids,
             db_path=db_path,
             prefer_demo=True,
@@ -92,11 +95,13 @@ def seed_conflict_demo(db_path: str | Path | None = None) -> None:
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE s.project_id = ? AND s.file_name IN (?, ?, ?)
                 """,
-                (PROJECT_ID, "r3_conflicts_a.txt", "r3_conflicts_b.txt", "r3_gaps.txt"),
+                (project_id, "r3_conflicts_a.txt", "r3_conflicts_b.txt", "r3_gaps.txt"),
             )
         }
         now = datetime.now().isoformat()
-        for claim_id, text, claim_type, file_name in _DEMO_CLAIMS:
+        suffix = "" if project_id == PROJECT_ID else f"-{project_id[-6:]}"
+        for base_claim_id, text, claim_type, file_name in _DEMO_CLAIMS:
+            claim_id = f"{base_claim_id}{suffix}"
             evidence_id = evidence.get(file_name)
             if not evidence_id:
                 raise ValueError(f"No evidence excerpt was parsed for {file_name}.")
@@ -107,7 +112,7 @@ def seed_conflict_demo(db_path: str | Path | None = None) -> None:
                      review_status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, 'SINGLE_SOURCE', 'cached_demo', 'PENDING', ?, ?)
                 """,
-                (claim_id, PROJECT_ID, text, claim_type, now, now),
+                (claim_id, project_id, text, claim_type, now, now),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?)",

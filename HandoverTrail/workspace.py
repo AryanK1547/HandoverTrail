@@ -58,6 +58,22 @@ def create_upload_workspace(db_path: str | Path | None = None) -> tuple[str, str
     return token, ensure_upload_workspace(token, db_path)
 
 
+def create_demo_copy(db_path: str | Path | None = None) -> tuple[str, str]:
+    """Create a private workspace seeded with the synthetic demo sources and claims.
+
+    Each judge or visitor gets an untouched copy, so approvals, releases, and
+    interview answers made by someone else never change their walkthrough.
+    """
+    from database import seed_demo_claims
+    from source_parser import parse_and_store_sources, register_demo_sources
+
+    token, project_id = create_upload_workspace(db_path)
+    register_demo_sources(project_id)
+    parse_and_store_sources(project_id, prefer_demo=True, db_path=db_path)
+    seed_demo_claims(project_id, db_path)
+    return token, project_id
+
+
 def get_active_project_id() -> str:
     token = st.query_params.get(WORKSPACE_QUERY_PARAM)
     if token in (None, ""):

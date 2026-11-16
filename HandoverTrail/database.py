@@ -403,12 +403,22 @@ def _seed_empty_demo_database(db_path: str | Path | None = None) -> None:
     _seed_cached_demo_claims(db_path)
 
 
-def _seed_cached_demo_claims(db_path: str | Path | None = None) -> None:
+def seed_demo_claims(project_id: str, db_path: str | Path | None = None) -> None:
+    """Seed the cached demo claims and Round 3 conflict fixture into one project."""
+    _seed_cached_demo_claims(db_path, project_id)
+    from round3_demo import seed_conflict_demo
+
+    seed_conflict_demo(db_path, project_id)
+
+
+def _seed_cached_demo_claims(
+    db_path: str | Path | None = None,
+    project_id: str = DEMO_PROJECT_ID,
+) -> None:
     cache_path = PROJECT_ROOT / "data" / "demo_cache" / "claims.json"
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    project_id = DEMO_PROJECT_ID
-    if cache.get("project_id") != project_id:
-        raise ValueError(f"Cached claims must target {project_id}.")
+    if cache.get("project_id") != DEMO_PROJECT_ID:
+        raise ValueError(f"Cached claims must target {DEMO_PROJECT_ID}.")
 
     conn = get_connection(db_path)
     if conn.execute(

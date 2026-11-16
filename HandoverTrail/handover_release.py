@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 
 from database import get_connection
+from handover_plan import build_pickup_plan
 from masking import mask_sensitive_text
 from permissions import normalize_role, require_role
 
@@ -157,6 +158,133 @@ def release_handover(role: str, project_id: str) -> dict:
         raise
     finally:
         conn.close()
+
+
+def get_release_readiness(role: str, project_id: str) -> dict:
+    """Summarize what the next release would contain and why items are left out."""
+    require_role(role, "prepare a handover release")
+    conn = get_connection()
+    try:
+        releasable = _build_snapshot(conn, project_id)
+        status_counts = {
+            row["review_status"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT review_status, COUNT(*) AS total FROM claims
+                WHERE project_id = ? GROUP BY review_status
+                """,
+                (project_id,),
+            )
+        }
+        approved = status_counts.get("APPROVED", 0)
+        unresolved_conflicts = conn.execute(
+            """
+            SELECT COUNT(*) FROM claim_conflicts
+            WHERE project_id = ? AND resolution = 'UNRESOLVED'
+              AND status IN ('CONFLICTING', 'POSSIBLE_CONFLICT')
+            """,
+            (project_id,),
+        ).fetchone()[0]
+        open_gaps = conn.execute(
+            "SELECT COUNT(*) FROM gaps WHERE project_id = ? AND status = 'open'",
+            (project_id,),
+        ).fetchone()[0]
+        latest = conn.execute(
+            """
+            SELECT id, version, released_at, snapshot_json FROM handover_versions
+            WHERE project_id = ? ORDER BY version DESC LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        latest_claims = (
+            json.loads(latest["snapshot_json"]).get("claims", []) if latest else None
+        )
+        acknowledged = bool(
+            latest
+            and conn.execute(
+                "SELECT 1 FROM handover_acks WHERE handover_version_id = ? LIMIT 1",
+                (latest["id"],),
+            ).fetchone()
+        )
+        return {
+            "releasable": len(releasable),
+            "releasable_claims": releasable,
+            "releasable_claim_ids": {claim["claim_id"] for claim in releasable},
+            "approved": approved,
+            "approved_excluded": approved - len(releasable),
+            "pending": status_counts.get("PENDING", 0)
+            + status_counts.get("EDITED_PENDING_REVIEW", 0),
+            "rejected": status_counts.get("REJECTED", 0),
+            "unresolved_conflicts": unresolved_conflicts,
+            "open_gaps": open_gaps,
+            "latest_version": latest["version"] if latest else 0,
+            "latest_released_at": latest["released_at"] if latest else None,
+            "latest_claims": len(latest_claims) if latest_claims is not None else 0,
+            "latest_acknowledged": acknowledged,
+            # True when a new release would differ from what Incoming already has.
+            "has_unreleased_changes": bool(releasable) and latest_claims != releasable,
+        }
+    finally:
+        conn.close()
+
+
+def snapshot_markdown(release: dict) -> str:
+    """Render a released snapshot as a portable Markdown document."""
+    lines = [
+        f"# Project handover · version {release['version']}",
+        "",
+        f"Released {release['released_at']}. Fixed snapshot of human-approved claims "
+        "supported only by public sources.",
+    ]
+    plan = build_pickup_plan(release["snapshot"]["claims"])
+    if plan["steps"]:
+        lines += ["", "## Where to start", ""]
+        number = 0
+        for horizon in plan["horizons"]:
+            lines += [f"**{horizon['name']}** — {horizon['guidance']}", ""]
+            for step in horizon["steps"]:
+                number += 1
+                lines.append(f"{number}. **{step['verb']}:** {step['text']}")
+                lines.append(f"   - Source: {step['source']}")
+                if step["confirm"]:
+                    lines.append(f"   - {step['confirm']}")
+            lines.append("")
+    if plan["focus_sources"]:
+        lines += ["", "## Where to work", ""]
+        lines += [
+            f"- {name} ({count} claim{'s' if count != 1 else ''})"
+            for name, count in plan["focus_sources"]
+        ]
+    claims_by_type: dict[str, list[dict]] = {}
+    for claim in release["snapshot"]["claims"]:
+        claims_by_type.setdefault(claim["claim_type"], []).append(claim)
+    for claim_type in sorted(claims_by_type, key=claim_type_priority):
+        lines += ["", f"## {claim_type}"]
+        for claim in claims_by_type[claim_type]:
+            lines += ["", f"- {claim['claim_text']}"]
+            for evidence in claim.get("evidence", []):
+                location = evidence.get("reference_location") or evidence.get("file_name")
+                lines.append(f"  - Source: {location}")
+    return "\n".join(lines) + "\n"
+
+
+_CLAIM_TYPE_ORDER = (
+    "Next action",
+    "Blocker",
+    "Risk",
+    "Open question",
+    "Dependency",
+    "Owner",
+    "Decision",
+)
+
+
+def claim_type_priority(claim_type: str) -> int:
+    """Order claim types so work an incoming teammate must act on comes first."""
+    try:
+        return _CLAIM_TYPE_ORDER.index(claim_type)
+    except ValueError:
+        return len(_CLAIM_TYPE_ORDER)
 
 
 def get_latest_release(role: str, project_id: str) -> dict | None:

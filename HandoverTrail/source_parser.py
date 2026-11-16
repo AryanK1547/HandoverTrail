@@ -167,6 +167,63 @@ def parse_and_store_sources(
         conn.close()
 
 
+def register_demo_sources(project_id: str = "PROJ-DEMO-001") -> int:
+    """Idempotently register the packaged synthetic files; return how many were new."""
+    demo_dir = PROJECT_ROOT / "data" / "demo_project"
+    conn = get_connection()
+    try:
+        added = 0
+        for path in sorted(demo_dir.iterdir()):
+            if not path.is_file():
+                continue
+            sensitivity = "restricted" if path.name == "restricted_demo.txt" else "public"
+            existing = conn.execute(
+                "SELECT source_id FROM sources WHERE project_id = ? AND file_name = ?",
+                (project_id, path.name),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE sources SET sensitivity = ? WHERE source_id = ?",
+                    (sensitivity, existing["source_id"]),
+                )
+                continue
+            conn.execute(
+                """
+                INSERT INTO sources
+                    (source_id, project_id, file_name, file_type, uploaded_at, sensitivity)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"SRC-{uuid.uuid4().hex[:8].upper()}",
+                    project_id,
+                    path.name,
+                    path.suffix.lstrip(".").upper(),
+                    datetime.now().isoformat(),
+                    sensitivity,
+                ),
+            )
+            added += 1
+        conn.commit()
+        return added
+    finally:
+        conn.close()
+
+
+def count_unparsed_sources(project_id: str) -> int:
+    conn = get_connection()
+    try:
+        return conn.execute(
+            """
+            SELECT COUNT(*) FROM sources s
+            WHERE s.project_id = ?
+              AND NOT EXISTS (SELECT 1 FROM evidence_chunks e WHERE e.source_id = s.source_id)
+            """,
+            (project_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     count = parse_and_store_sources(force_reparse=True)
     print(f"\nDone! Total chunks created across all sources: {count}")

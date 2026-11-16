@@ -8,18 +8,21 @@ import streamlit as st
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from database import DEMO_PROJECT_ID, PROJECT_ROOT, bootstrap, get_connection
+from database import DEMO_PROJECT_ID, bootstrap, get_connection
 from permissions import can_review
 from retrieval import get_visible_evidence_chunks, get_visible_sources
 from source_parser import (
+    count_unparsed_sources,
     parse_and_store_sources,
     persist_uploaded_file,
+    register_demo_sources,
     sanitize_upload_filename,
 )
 from ui import (
     configure_page,
     empty_state,
     footer,
+    page_navigation,
     page_shell,
     render_stats_for_role,
     sensitivity_badge,
@@ -67,6 +70,14 @@ if not can_review(role):
         )
     footer()
     st.stop()
+upload_success = st.session_state.pop("ui_upload_success", None)
+if upload_success:
+    st.success(upload_success)
+    st.page_link(
+        "pages/2_Review_Claims.py",
+        label="Continue: extract claims from these sources →",
+        query_params=dict(st.query_params),
+    )
 for upload_warning in st.session_state.pop("ui_upload_warnings", []):
     st.warning(upload_warning)
 render_stats_for_role(role, counts)
@@ -84,54 +95,25 @@ with demo_tab:
             type="primary",
         ):
             PROJECT_ID = activate_demo_workspace()
-            demo_dir = PROJECT_ROOT / "data" / "demo_project"
-            conn = get_connection()
             try:
-                cursor = conn.cursor()
-                loaded_count = 0
-                for path in sorted(demo_dir.iterdir()):
-                    if not path.is_file():
-                        continue
-                    file_name = path.name
-                    sensitivity = "restricted" if file_name == "restricted_demo.txt" else "public"
-                    existing = cursor.execute(
-                        "SELECT source_id FROM sources WHERE project_id = ? AND file_name = ?",
-                        (PROJECT_ID, file_name),
-                    ).fetchone()
-                    if existing:
-                        cursor.execute(
-                            "UPDATE sources SET sensitivity = ? WHERE source_id = ?",
-                            (sensitivity, existing["source_id"]),
-                        )
-                    else:
-                        cursor.execute(
-                            """
-                            INSERT INTO sources
-                                (source_id, project_id, file_name, file_type, uploaded_at, sensitivity)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                f"SRC-{uuid.uuid4().hex[:8].upper()}",
-                                PROJECT_ID,
-                                file_name,
-                                path.suffix.lstrip(".").upper(),
-                                datetime.now().isoformat(),
-                                sensitivity,
-                            ),
-                        )
-                        loaded_count += 1
-                conn.commit()
-            finally:
-                conn.close()
-            if loaded_count:
-                st.session_state["ui_flash_toast"] = (
-                    f"Registered {loaded_count} synthetic source files."
+                loaded_count = register_demo_sources(PROJECT_ID)
+                parsed_chunks = parse_and_store_sources(PROJECT_ID, prefer_demo=True)
+            except (OSError, ValueError) as exc:
+                st.error(
+                    f"The demo files could not be loaded: {exc} "
+                    "No claims were changed; you can retry."
                 )
             else:
-                st.session_state["ui_flash_toast"] = (
-                    "The synthetic demo files are already registered."
-                )
-            st.rerun()
+                if loaded_count or parsed_chunks:
+                    st.session_state["ui_flash_toast"] = (
+                        f"Registered {loaded_count} synthetic source file(s) and parsed "
+                        f"{parsed_chunks} evidence excerpt(s)."
+                    )
+                else:
+                    st.session_state["ui_flash_toast"] = (
+                        "The synthetic demo files are already registered and parsed."
+                    )
+                st.rerun()
 
 with upload_tab:
     with st.container(border=True):
@@ -142,9 +124,9 @@ with upload_tab:
         )
         if st.button("Start a new upload workspace"):
             activate_upload_workspace(new_workspace=True)
-            st.toast("Started a separate upload workspace.")
+            st.session_state["ui_flash_toast"] = "Started a separate, empty upload workspace."
             st.rerun()
-        with st.form("source_upload_form"):
+        with st.form("source_upload_form", clear_on_submit=True):
             uploaded_files = st.file_uploader(
                 "Choose source files",
                 type=["txt", "md", "csv"],
@@ -230,20 +212,35 @@ with upload_tab:
             finally:
                 conn.close()
 
+            rejected_messages = [
+                f"Not saved — {message}" for message in rejected_files
+            ]
             if changed_source_ids:
-                chunks_created = parse_and_store_sources(
-                    PROJECT_ID,
-                    source_ids=changed_source_ids,
-                )
-                summary = (
-                    f"Saved {len(saved_files)} file(s), created {chunks_created} evidence "
-                    "excerpts, and replaced "
-                    f"{len(replaced_files)} existing file(s)."
-                )
-                st.session_state["ui_flash_toast"] = summary
-                st.session_state["ui_upload_warnings"] = rejected_files
+                try:
+                    chunks_created = parse_and_store_sources(
+                        PROJECT_ID,
+                        source_ids=changed_source_ids,
+                    )
+                except (OSError, ValueError) as exc:
+                    st.session_state["ui_upload_warnings"] = [
+                        f"Saved {len(saved_files)} file(s), but parsing failed: {exc} "
+                        "The files remain registered; use Parse unprocessed sources to retry.",
+                        *rejected_messages,
+                    ]
+                else:
+                    saved_names = ", ".join(name for name, _path in saved_files)
+                    summary = (
+                        f"Saved {len(saved_files)} of {len(uploaded_files)} file(s) "
+                        f"({saved_names}), created {chunks_created} evidence "
+                        "excerpts, and replaced "
+                        f"{len(replaced_files)} existing file(s)."
+                    )
+                    st.session_state["ui_flash_toast"] = summary
+                    st.session_state["ui_upload_success"] = summary
+                    st.session_state["ui_upload_warnings"] = rejected_messages
                 st.rerun()
-            for message in rejected_files:
+            st.error("No file was saved. Fix the problems below and upload again.")
+            for message in rejected_messages:
                 st.warning(message)
         elif upload_submitted:
             st.info("Choose at least one .txt, .md, or .csv file to upload.")
@@ -262,15 +259,40 @@ else:
         "Load the synthetic demo or upload a .txt, .md, or .csv file.",
     )
 
+unparsed_sources = count_unparsed_sources(PROJECT_ID)
 with st.container(border=True):
     st.subheader("Parse source files")
-    st.write("Create searchable evidence excerpts from registered sources.")
-    if st.button("Parse unprocessed sources"):
-        new_chunks = parse_and_store_sources(PROJECT_ID)
-        if new_chunks:
-            st.success(f"Created {new_chunks} evidence excerpts.")
+    if unparsed_sources:
+        st.write(
+            f"{unparsed_sources} registered source(s) have no evidence excerpts yet. "
+            "Parsing creates the searchable excerpts that claims cite."
+        )
+    else:
+        st.caption(
+            "Uploads are parsed automatically when they are saved. Every registered "
+            "source already has evidence excerpts."
+        )
+    if st.button("Parse unprocessed sources", disabled=not unparsed_sources):
+        try:
+            new_chunks = parse_and_store_sources(PROJECT_ID)
+        except (OSError, ValueError) as exc:
+            st.error(
+                f"Parsing did not finish: {exc} Existing excerpts and claims are "
+                "unchanged. Upload the file again, then retry."
+            )
         else:
-            st.info("All registered sources already have evidence excerpts.")
+            st.session_state["ui_flash_toast"] = (
+                f"Created {new_chunks} evidence excerpts."
+                if new_chunks
+                else "No readable content was found in the unprocessed sources."
+            )
+            st.rerun()
+    if sources and not unparsed_sources:
+        st.page_link(
+            "pages/2_Review_Claims.py",
+            label="Continue: extract and review claims →",
+            query_params=dict(st.query_params),
+        )
 
 st.subheader("Evidence excerpts")
 evidence_rows = get_visible_evidence_chunks(role, PROJECT_ID)
@@ -313,4 +335,7 @@ else:
         "Parse registered sources to create excerpts that can support claims.",
     )
 
+page_navigation(
+    following=(("Extract and review claims", "pages/2_Review_Claims.py"),) if sources else (),
+)
 footer()
