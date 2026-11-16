@@ -3,9 +3,9 @@
 Compares four things: the **Round 2 submission** (git tag `round2-submitted`,
 commit `87b7c2b`), the **three improvements promised for Round 3**, the
 **Round 3 master plan** (`ROUND3_MASTER_PLAN.md`), and what the repository
-contains now on branch `r3/ux-hardening`. Statements about the live site refer
-to the last deployed commit `839953b`; the work after it is local until merged
-and redeployed.
+contains now. The final work was merged into `main` as `106d76e` and the live
+site reported that commit on 16 Nov 2026. Earlier deployed findings
+(`DEPLOYED_QA_REPORT.md`) describe commit `839953b`.
 
 ## 1. Where Round 2 stood
 
@@ -46,7 +46,8 @@ and redeployed.
 | Bonus: Git Handover | **Not built** | Decision gate was Sun 22:00; no code exists |
 | Bonus: comprehension check before acknowledgement | **Not built** | |
 | Bonus: handover pack download | **Partly** | Released version downloads as Markdown; not a multi-file pack |
-| Live QA on the deployed site, final PDF, own entry, submission | **Open** | Deployed app still runs `839953b`; PDF, entry, and form are outside the repository |
+| Live QA on the deployed site | **Done on `106d76e`** | Scripted Chromium run of the full journey on the live site, 16 Nov 2026 (see README, Status of the live site) |
+| Final PDF, own entry, submission form | **Open** | Outside the repository |
 
 ## 4. Changes beyond the plan
 
@@ -86,16 +87,19 @@ Found by driving the whole journey in a browser and by reviewing the pages:
 Local results: **57 backend tests and 5 browser journeys pass**, with provider
 calls disabled in all of them.
 
-**Not verified:** the deployed site (it predates these changes), live Gemini or
-OpenRouter responses, Firefox and WebKit, keyboard-only and screen-reader use,
-simultaneous users, and persistence across a Streamlit Cloud restart (private
-copies live in the same non-durable local SQLite file).
+Live site (`106d76e`, 16 Nov 2026): the full guided journey completed in a
+scripted Chromium run, ending at 9 of 9 tour steps.
+
+**Not verified:** live Gemini or OpenRouter responses (extraction was not run
+on the live site), uploading your own files on the live site, Firefox and
+WebKit, keyboard-only and screen-reader use, simultaneous users, and
+persistence across a Streamlit Cloud restart (private copies live in the same
+non-durable local SQLite file).
 
 ## 6. Before submitting
 
-1. Merge `r3/ux-hardening` into `main` and let Streamlit Cloud redeploy; judges
-   otherwise see the older build. A redeploy resets the demo database, so check
-   the live site after the last push.
+1. After any further push to `main`, wait for Streamlit Cloud to redeploy and
+   re-check the footer commit; a redeploy resets the demo database.
 2. Open the live URL in a private window and complete the guided tour once.
 3. Confirm the schedule question in `CHANGES_FROM_PLAN.md`: the first Round 3
    commits are timestamped before the stated 23:59 IST window opening.

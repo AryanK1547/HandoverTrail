@@ -362,17 +362,25 @@ build the project.
 
 ## Status of the live site
 
-- The live app is on Streamlit Community Cloud. When it was last checked
-  (13 Nov 2026) its footer reported commit `839953b`. That build **predates**
-  the guided tour, private demo copies, the redesigned Review page, the pick-up
-  plan, and the role-gating fixes described above, which live on the branch
-  `r3/ux-hardening` until merged and redeployed. If the footer still shows
-  `839953b`, you are looking at the earlier build; the screenshots in this
-  README show the newer one.
-- That check made no user-initiated writes and did not call a provider, but
-  opening Review Claims refreshed derived conflict and gap records. Live
-  extraction, upload handling, release, acknowledgement, and restart behavior
-  were not verified on the hosted site.
+- The live app is on Streamlit Community Cloud. On 16 Nov 2026 its footer
+  reported commit `106d76e` (the merge of the final UX work into `main`), so it
+  includes everything described in this README. A scripted Chromium run
+  completed the whole guided journey on the live site using a private demo
+  copy: validate evidence, resolve a conflict, approve claims, generate and send
+  interview questions, answer as Departing, approve the answer-derived claim,
+  release version 1, read the Day 1 / Week 1 plan as Incoming (the restricted
+  file never appeared), and acknowledge. The tour then showed 9 of 9 steps
+  complete. Incoming had no upload controls and Departing opening the handover
+  page showed guidance, not an error. The upload page states the 2 MB limit
+  consistently.
+- Not exercised on the live site: AI extraction (the run deliberately did not
+  click Extract, to spare the free-tier quota), uploading your own files,
+  Firefox and WebKit, and restart behavior. The earlier 13 Nov findings in
+  `DEPLOYED_QA_REPORT.md` describe commit `839953b`.
+- Shortly after a merge, the app briefly showed an `ImportError` on its first
+  load and then loaded normally on the next check. The cause was not confirmed
+  (a redeploy in progress is the likely one); if you see it, reload after a
+  minute.
 - Streamlit sleeps apps without traffic; a first visit may show a wake-up
   screen. Hosted storage is not durable, so data and uploads reset when the
   instance restarts, and a redeploy resets the demo database.

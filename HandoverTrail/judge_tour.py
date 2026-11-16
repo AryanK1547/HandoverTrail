@@ -154,7 +154,8 @@ TOUR_STEPS = (
     ),
     (
         "approve_answer", "Reviewer", REVIEW, "Improvement 2", "Review the answer like any other claim",
-        "Back as Reviewer, approve the claim created from the answer. Interview answers go "
+        "Back as Reviewer, find the claim created from the answer (type a word from your "
+        "answer in “Search claim text” and press Enter) and approve it. Interview answers go "
         "through the same review as every other claim.",
         "Approving it closes the gap it answered.",
         lambda s: s["answer_claims_approved"] > 0,
